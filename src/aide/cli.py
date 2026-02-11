@@ -134,3 +134,53 @@ def serve(port: int | None):
         app.run(host="localhost", port=serve_port, debug=True)
     except ImportError:
         click.echo("Web dashboard not yet built (M2). Use 'aide stats' for now.")
+
+
+@cli.command()
+@click.argument("session_id")
+def autopsy(session_id: str):
+    """Analyze a single session and produce a diagnostic report."""
+    config = load_config()
+    db_path = config.db_path
+
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.autopsy.analyzer import (
+        analyze_context,
+        analyze_cost,
+        analyze_suggestions,
+        analyze_summary,
+    )
+    from aide.autopsy.queries import (
+        get_session,
+        get_session_files_touched,
+        get_session_messages,
+        get_session_tool_calls,
+        get_session_tool_usage,
+    )
+    from aide.autopsy.report import render_report
+
+    session = get_session(db_path, session_id)
+    if session is None:
+        click.echo(f"Session '{session_id}' not found.", err=True)
+        raise SystemExit(1)
+
+    messages = get_session_messages(db_path, session_id)
+    tool_calls = get_session_tool_calls(db_path, session_id)
+    tool_usage = get_session_tool_usage(db_path, session_id)
+    files_touched = get_session_files_touched(db_path, session_id)
+
+    summary = analyze_summary(session, tool_usage, files_touched)
+    cost_analysis = analyze_cost(session, messages, tool_calls)
+    context = analyze_context(messages)
+    suggestions = analyze_suggestions(
+        files_touched,
+        cost_analysis.cache_efficiency,
+        context.estimated_compaction_count,
+        session["tool_call_count"],
+    )
+
+    report = render_report(summary, cost_analysis, context, suggestions)
+    click.echo(report)

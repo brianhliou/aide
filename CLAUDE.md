@@ -24,17 +24,23 @@ Build brief with full context, milestones, and design decisions: `~/projects/pro
 
 ```
 src/aide/
-├── cli.py          # Click CLI: ingest, serve, stats
+├── cli.py          # Click CLI: ingest, serve, stats, autopsy
 ├── parser.py       # JSONL → structured session data
 ├── db.py           # SQLite schema, queries, ingest
 ├── cost.py         # Cost estimation logic
 ├── config.py       # YAML config loading + defaults
+├── models.py       # Shared dataclasses (ParsedSession, ParsedMessage, ToolCall)
 ├── web/
 │   ├── app.py      # Flask app factory
 │   ├── routes.py   # Route handlers
 │   ├── queries.py  # SQL query functions for dashboard
 │   ├── templates/  # Jinja2 templates (base, overview, projects, sessions, tools)
 │   └── static/     # charts.js
+├── autopsy/
+│   ├── analyzer.py    # 4 analyzer functions + dataclasses
+│   ├── queries.py     # DB queries for session analysis
+│   ├── report.py      # Markdown report renderer
+│   └── suggestions.py # CLAUDE.md suggestion rules engine
 └── __main__.py     # python -m aide entrypoint
 tests/
 ├── conftest.py
@@ -42,6 +48,7 @@ tests/
 ├── test_db.py
 ├── test_cost.py
 ├── test_web.py
+├── test_autopsy.py
 └── fixtures/
     └── sample.jsonl
 ```
@@ -55,10 +62,11 @@ Run `just` to see all available commands. Key commands:
 - `just lint` — run ruff
 - `just ingest` — parse JSONL logs into SQLite
 - `just serve` — start dashboard at localhost:8787
+- `uv run aide autopsy <session-id>` — generate session diagnostic report
 
 ## Key Patterns
 
-- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → Flask dashboard
+- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → Flask dashboard / autopsy CLI
 - **Incremental ingest:** Track file mtime in `ingest_log` table, skip unchanged files
 - **Zero LLM calls:** All analysis is heuristic-based, no marginal cost
 - **Cost estimation:** API pricing by default, `subscription_user` flag for Pro/Max users shows "estimated equivalent" badge
