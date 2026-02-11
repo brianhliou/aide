@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+
+{% block title %}Tools - aide{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Tools</h1>
+
+{# --- Tool Usage Bar Chart --- #}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Tool Usage</h2>
+    <div style="height: 300px;">
+        <canvas id="toolCountChart"></canvas>
+    </div>
+</div>
+
+{# --- Tool Usage Over Time (Stacked Area) --- #}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Tool Usage Over Time</h2>
+    <div style="height: 350px;">
+        <canvas id="toolWeeklyChart"></canvas>
+    </div>
+</div>
+
+{# --- Most Accessed Files Table --- #}
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-900">Most Accessed Files</h2>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Reads</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Edits</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Writes</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for f in top_files %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4 text-sm font-mono text-gray-900 max-w-md truncate" title="{{ f.file_path }}">
+                    {%- set parts = f.file_path.split('/') -%}
+                    {%- if parts|length > 3 -%}
+                        .../{{ parts[-3:] | join('/') }}
+                    {%- else -%}
+                        {{ f.file_path }}
+                    {%- endif -%}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ f.read_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ f.edit_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ f.write_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 text-right">{{ f.total }}</td>
+            </tr>
+            {% endfor %}
+            {% if not top_files %}
+            <tr>
+                <td colspan="5" class="px-6 py-12 text-center text-sm text-gray-500">No file access data found.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    // --- Data from server ---
+    const toolCounts = {{ tool_counts|tojson }};
+    const toolWeekly = {{ tool_weekly|tojson }};
+
+    // --- Tool Usage Bar Chart ---
+    const toolLabels = toolCounts.map(d => d.tool_name);
+    const toolData = toolCounts.map(d => d.count);
+    const toolColors = toolLabels.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
+
+    const ctx = document.getElementById("toolCountChart").getContext("2d");
+    new Chart(ctx, {
+        type: "bar",
+        data: {
+            labels: toolLabels,
+            datasets: [{
+                data: toolData,
+                backgroundColor: toolColors,
+                borderRadius: 4,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            return ctx.parsed.y.toLocaleString() + " calls";
+                        },
+                    },
+                },
+            },
+            scales: {
+                x: {
+                    ticks: { font: { size: 11, family: "system-ui, sans-serif" } },
+                    grid: { display: false },
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: { font: { size: 11, family: "system-ui, sans-serif" } },
+                    grid: { color: "rgba(0, 0, 0, 0.05)" },
+                },
+            },
+        },
+    });
+
+    // --- Tool Usage Over Time (Stacked Area) ---
+    // Top tools to display (keep chart readable)
+    const topTools = ["Bash", "Edit", "Read", "Write", "Grep", "Glob"];
+
+    // Collect unique weeks (sorted)
+    const weekSet = new Set();
+    toolWeekly.forEach(d => weekSet.add(d.week_start));
+    const weeks = Array.from(weekSet).sort();
+
+    // Group data by tool_name, build a count map per week
+    const toolWeekMap = {};
+    toolWeekly.forEach(function(d) {
+        if (topTools.indexOf(d.tool_name) === -1) return;
+        if (!toolWeekMap[d.tool_name]) toolWeekMap[d.tool_name] = {};
+        toolWeekMap[d.tool_name][d.week_start] = d.count;
+    });
+
+    // Build datasets for each tool
+    const datasets = topTools
+        .filter(name => toolWeekMap[name])
+        .map(function(name, i) {
+            const color = PROJECT_COLORS[i % PROJECT_COLORS.length];
+            // Create alpha version for fill
+            const alphaColor = color.replace("rgb(", "rgba(").replace(")", ", 0.3)");
+            return {
+                label: name,
+                data: weeks.map(w => (toolWeekMap[name] && toolWeekMap[name][w]) || 0),
+                fill: true,
+                borderColor: color,
+                backgroundColor: alphaColor,
+                borderWidth: 2,
+                tension: 0.3,
+                pointRadius: 0,
+                pointHitRadius: 8,
+            };
+        });
+
+    createLineChart("toolWeeklyChart", weeks, datasets, {
+        scales: {
+            x: {
+                grid: { display: false },
+            },
+            y: {
+                stacked: true,
+                beginAtZero: true,
+            },
+        },
+        plugins: {
+            legend: {
+                display: true,
+                position: "top",
+            },
+        },
+    });
+})();
+</script>
+{% endblock %}

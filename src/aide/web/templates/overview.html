@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}aide - Overview{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Overview</h1>
+
+<!-- Summary Cards -->
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+    <!-- Last 30 Days -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Last 30 Days</h3>
+        <div class="text-3xl font-bold text-gray-900 mb-2">
+            {{ summary.last_30d.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+        </div>
+        <div class="flex items-center gap-4 text-sm text-gray-600">
+            <span>{% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.last_30d.cost) }}</span>
+            <span class="text-gray-300">|</span>
+            <span>{{ summary.last_30d.projects }} projects</span>
+        </div>
+    </div>
+
+    <!-- This Week -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">This Week</h3>
+        <div class="text-3xl font-bold text-gray-900 mb-2">
+            {{ summary.this_week.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+        </div>
+        <div class="flex items-center gap-4 text-sm text-gray-600">
+            <span>{% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.this_week.cost) }}</span>
+            <span class="text-gray-300">|</span>
+            <span>{{ summary.this_week.projects }} projects</span>
+        </div>
+    </div>
+
+    <!-- Today -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Today</h3>
+        <div class="text-3xl font-bold text-gray-900 mb-2">
+            {{ summary.today.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+        </div>
+        <div class="text-sm text-gray-600">
+            {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.today.cost) }}
+        </div>
+    </div>
+</div>
+
+<!-- Cost Over Time -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Cost Over Time</h2>
+    <div style="height: 300px;">
+        <canvas id="costOverTimeChart"></canvas>
+    </div>
+</div>
+
+<!-- Sessions Per Week -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Sessions Per Week</h2>
+    <div style="height: 300px;">
+        <canvas id="sessionsPerWeekChart"></canvas>
+    </div>
+</div>
+
+<!-- Two-column layout for project costs and token breakdown -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Cost By Project -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Cost By Project</h2>
+        <div style="height: 300px;">
+            <canvas id="costByProjectChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Token Breakdown -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Token Breakdown</h2>
+        <div style="height: 300px;">
+            <canvas id="tokenBreakdownChart"></canvas>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // --- Data from server ---
+    const dailyCosts = {{ daily_costs|tojson }};
+    const weeklySessions = {{ weekly_sessions|tojson }};
+    const costByProject = {{ cost_by_project|tojson }};
+    const tokenBreakdown = {{ token_breakdown|tojson }};
+    const isSubscriptionUser = {{ subscription_user|tojson }};
+
+    // --- Cost Over Time (line chart with daily cost + 7-day avg) ---
+    createLineChart(
+        "costOverTimeChart",
+        dailyCosts.map(d => d.date),
+        [
+            {
+                label: "Daily Cost",
+                data: dailyCosts.map(d => d.cost),
+                borderColor: AIDE_COLORS.primary,
+                backgroundColor: AIDE_COLORS_ALPHA.primary,
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+                pointHitRadius: 8,
+                borderWidth: 2,
+            },
+            {
+                label: "7-Day Avg",
+                data: dailyCosts.map(d => d.cost_7d_avg),
+                borderColor: AIDE_COLORS.secondary,
+                borderDash: [6, 3],
+                fill: false,
+                tension: 0.3,
+                pointRadius: 0,
+                pointHitRadius: 8,
+                borderWidth: 2,
+            },
+        ],
+        {
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        callback: function(value) {
+                            return (isSubscriptionUser ? "est. " : "") + formatCost(value);
+                        },
+                    },
+                },
+            },
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const prefix = isSubscriptionUser ? "est. " : "";
+                            return ctx.dataset.label + ": " + prefix + formatCost(ctx.parsed.y);
+                        },
+                    },
+                },
+            },
+        }
+    );
+
+    // --- Sessions Per Week (bar chart) ---
+    createBarChart(
+        "sessionsPerWeekChart",
+        weeklySessions.map(d => d.week_start),
+        weeklySessions.map(d => d.session_count),
+        {
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        stepSize: 1,
+                        precision: 0,
+                    },
+                },
+            },
+        }
+    );
+
+    // --- Cost By Project (horizontal bar chart) ---
+    (function() {
+        const labels = costByProject.map(d => d.project_name);
+        const data = costByProject.map(d => d.total_cost);
+        const colors = labels.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
+
+        const ctx = document.getElementById("costByProjectChart").getContext("2d");
+        new Chart(ctx, {
+            type: "bar",
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: data,
+                    backgroundColor: colors,
+                    borderRadius: 4,
+                }],
+            },
+            options: {
+                indexAxis: "y",
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const prefix = isSubscriptionUser ? "est. " : "";
+                                return prefix + formatCost(ctx.parsed.x);
+                            },
+                        },
+                    },
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return (isSubscriptionUser ? "est. " : "") + formatCost(value);
+                            },
+                            font: { size: 11, family: "system-ui, sans-serif" },
+                        },
+                        grid: { color: "rgba(0, 0, 0, 0.05)" },
+                    },
+                    y: {
+                        ticks: {
+                            font: { size: 11, family: "system-ui, sans-serif" },
+                        },
+                        grid: { display: false },
+                    },
+                },
+            },
+        });
+    })();
+
+    // --- Token Breakdown (doughnut chart) ---
+    createPieChart(
+        "tokenBreakdownChart",
+        ["Input", "Output", "Cache Read", "Cache Creation"],
+        [
+            tokenBreakdown.input,
+            tokenBreakdown.output,
+            tokenBreakdown.cache_read,
+            tokenBreakdown.cache_creation,
+        ],
+        {
+            cutout: "60%",
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            return ctx.label + ": " + formatTokens(ctx.parsed);
+                        },
+                    },
+                },
+            },
+        }
+    );
+</script>
+{% endblock %}

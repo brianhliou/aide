@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}Projects - aide{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Projects</h1>
+
+{# --- Projects table --- #}
+<div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Sessions</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Cost</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Cost/Session</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for p in projects %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <a href="/sessions?project={{ p.project_name }}" class="text-blue-600 hover:text-blue-800 hover:underline">
+                        {{ p.project_name }}
+                    </a>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {{ p.session_count }}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {% if subscription_user %}est. {% endif %}${{ "%.2f"|format(p.total_cost) }}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {% if subscription_user %}est. {% endif %}${{ "%.2f"|format(p.avg_cost_per_session) }}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {%- set hours = (p.total_duration_seconds // 3600)|int -%}
+                    {%- set minutes = ((p.total_duration_seconds % 3600) // 60)|int -%}
+                    {%- if hours > 0 -%}
+                        {{ hours }}h{{ " %dm"|format(minutes) if minutes > 0 else "" }}
+                    {%- elif minutes > 0 -%}
+                        {{ minutes }}m
+                    {%- else -%}
+                        0m
+                    {%- endif -%}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {%- if p.total_tokens >= 1000000 -%}
+                        {{ "%.1f"|format(p.total_tokens / 1000000) }}M
+                    {%- elif p.total_tokens >= 1000 -%}
+                        {{ (p.total_tokens // 1000)|int }}K
+                    {%- else -%}
+                        {{ p.total_tokens }}
+                    {%- endif -%}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<p class="text-sm text-gray-500 mb-8">Click a project to see its sessions.</p>
+
+{# --- Cost per session scatter plot --- #}
+<div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-lg font-semibold mb-4">Cost Per Session by Project</h2>
+    <div style="height: 400px;">
+        <canvas id="costPerSessionChart"></canvas>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const rawData = {{ scatter_data|tojson }};
+    const subscriptionUser = {{ subscription_user|tojson }};
+
+    // Group scatter data by project name
+    const grouped = {};
+    rawData.forEach(function(d) {
+        if (!grouped[d.project_name]) {
+            grouped[d.project_name] = [];
+        }
+        grouped[d.project_name].push({
+            x: new Date(d.started_at),
+            y: d.estimated_cost_usd,
+            sessionId: d.session_id,
+        });
+    });
+
+    // Build datasets, one per project
+    const projectNames = Object.keys(grouped).sort();
+    const datasets = projectNames.map(function(name, i) {
+        return {
+            label: name,
+            data: grouped[name],
+            backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length],
+            borderColor: PROJECT_COLORS[i % PROJECT_COLORS.length],
+            pointRadius: 6,
+            pointHoverRadius: 8,
+        };
+    });
+
+    createScatterChart("costPerSessionChart", datasets, {
+        scales: {
+            x: {
+                type: "time",
+                time: {
+                    unit: "day",
+                    tooltipFormat: "MMM d, yyyy",
+                    displayFormats: { day: "MMM d" },
+                },
+                title: {
+                    display: true,
+                    text: "Date",
+                    font: { size: 12, family: "system-ui, sans-serif" },
+                },
+                grid: { display: false },
+            },
+            y: {
+                beginAtZero: true,
+                title: {
+                    display: true,
+                    text: subscriptionUser ? "Estimated Cost (USD)" : "Cost (USD)",
+                    font: { size: 12, family: "system-ui, sans-serif" },
+                },
+                ticks: {
+                    callback: function(value) {
+                        return formatCost(value);
+                    },
+                },
+                grid: { color: "rgba(0, 0, 0, 0.05)" },
+            },
+        },
+        plugins: {
+            tooltip: {
+                callbacks: {
+                    title: function(items) {
+                        if (!items.length) return "";
+                        const d = items[0].raw.x;
+                        return d instanceof Date ? d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : d;
+                    },
+                    label: function(item) {
+                        return item.dataset.label + ": " + formatCost(item.raw.y);
+                    },
+                },
+            },
+        },
+    });
+})();
+</script>
+{% endblock %}

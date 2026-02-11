@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}aide - Sessions{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Sessions</h1>
+
+{% if project_filter %}
+<div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-6 flex items-center justify-between">
+    <span class="text-sm text-blue-800">
+        Showing sessions for <span class="font-semibold">{{ project_filter }}</span>
+    </span>
+    <a href="/sessions" class="text-sm text-blue-600 hover:text-blue-800 font-medium">show all</a>
+</div>
+{% endif %}
+
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for s in sessions %}
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                    <a href="/sessions/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 font-medium">
+                        {{ s.started_at[:10] }}
+                        <span class="text-gray-400 font-normal">{{ s.started_at[11:16] }}</span>
+                    </a>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                    <a href="/sessions?project={{ s.project_name }}" class="hover:text-blue-600">{{ s.project_name }}</a>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {% set hours = s.duration_seconds // 3600 %}
+                    {% set minutes = (s.duration_seconds % 3600) // 60 %}
+                    {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.message_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.tool_call_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(s.estimated_cost_usd) }}
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not sessions %}
+            <tr>
+                <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">No sessions found.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

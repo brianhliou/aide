@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}aide{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen">
+    <nav class="bg-white border-b border-gray-200">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-14">
+                <a href="/" class="text-lg font-semibold tracking-tight text-gray-900">aide</a>
+                <div class="flex space-x-6 text-sm font-medium">
+                    <a href="/"
+                       class="{% if request.path == '/' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Overview
+                    </a>
+                    <a href="/projects"
+                       class="{% if request.path == '/projects' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Projects
+                    </a>
+                    <a href="/sessions"
+                       class="{% if request.path.startswith('/sessions') %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Sessions
+                    </a>
+                    <a href="/tools"
+                       class="{% if request.path == '/tools' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Tools
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {% block content %}{% endblock %}
+    </main>
+
+    <script src="{{ url_for('static', filename='charts.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

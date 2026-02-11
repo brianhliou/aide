@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block title %}aide - Session {{ detail.started_at[:10] }}{% endblock %}
+
+{% block content %}
+<!-- Back link -->
+<div class="mb-6">
+    <a href="/sessions{% if detail.project_name %}?project={{ detail.project_name }}{% endif %}"
+       class="text-sm text-blue-600 hover:text-blue-800 font-medium">
+        &larr; Back to sessions
+    </a>
+</div>
+
+<!-- Header -->
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">
+        Session: {{ detail.started_at[:10] }}
+        <span class="text-gray-400 font-normal">&middot;</span>
+        <span class="text-gray-600">{{ detail.project_name }}</span>
+    </h1>
+</div>
+
+<!-- Summary Stats -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+        <div>
+            <span class="font-semibold text-gray-900">Duration:</span>
+            {% set hours = detail.duration_seconds // 3600 %}
+            {% set minutes = (detail.duration_seconds % 3600) // 60 %}
+            {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
+        </div>
+        <span class="text-gray-300">|</span>
+        <div>
+            <span class="font-semibold text-gray-900">Messages:</span>
+            {{ detail.message_count }}
+            <span class="text-gray-500">({{ detail.user_message_count }} user, {{ detail.assistant_message_count }} assistant)</span>
+        </div>
+        <span class="text-gray-300">|</span>
+        <div>
+            <span class="font-semibold text-gray-900">Cost:</span>
+            {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(detail.estimated_cost_usd) }}
+        </div>
+    </div>
+</div>
+
+<!-- Token Breakdown -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Tokens</h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div>
+            <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Input</div>
+            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_input_tokens / 1000)|round|int }}K</div>
+        </div>
+        <div>
+            <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Output</div>
+            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_output_tokens / 1000)|round|int }}K</div>
+        </div>
+        <div>
+            <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cache Read</div>
+            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_cache_read_tokens / 1000)|round|int }}K</div>
+        </div>
+        <div>
+            <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cache Creation</div>
+            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_cache_creation_tokens / 1000)|round|int }}K</div>
+        </div>
+    </div>
+</div>
+
+<!-- Tool Usage -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Tool Usage</h2>
+    {% if detail.tool_usage %}
+    <div class="flex flex-wrap gap-2">
+        {% for tool in detail.tool_usage %}
+        <span class="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-blue-50 text-blue-700 border border-blue-200">
+            {{ tool.tool_name }}
+            <span class="ml-1.5 text-blue-500">({{ tool.count }})</span>
+        </span>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500">No tool calls recorded.</p>
+    {% endif %}
+</div>
+
+<!-- Files Touched -->
+{% if detail.files_touched %}
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <div class="p-6 pb-0">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Files Touched</h2>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Reads</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Edits</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Writes</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for f in detail.files_touched %}
+            <tr class="hover:bg-gray-50 transition-colors">
+                <td class="px-6 py-3 text-sm font-mono text-gray-800">{{ f.file_path }}</td>
+                <td class="px-6 py-3 text-sm text-gray-700 text-right">{{ f.read_count }}</td>
+                <td class="px-6 py-3 text-sm text-gray-700 text-right">{{ f.edit_count }}</td>
+                <td class="px-6 py-3 text-sm text-gray-700 text-right">{{ f.write_count }}</td>
+                <td class="px-6 py-3 text-sm font-semibold text-gray-900 text-right">{{ f.total }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
