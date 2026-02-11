@@ -104,29 +104,29 @@ uv run ruff check src/ tests/   # Lint
 
 ## Roadmap
 
-### Phase 1: Effectiveness Foundations
-Extract and generalize the metric/recommendation logic so it's shared and tunable.
+### Phase 1: Effectiveness Metrics
+The product differentiator. Without this, aide is just a cost dashboard.
 
-1. **Extract shared metrics** — Move metric computation (cache efficiency, compaction detection, cost categorization) and recommendation rules out of `autopsy/` into shared core modules (`metrics.py`, `recommendations.py`). Both dashboard and autopsy consume them. Thresholds as named constants at the top of each file.
-2. **Basic effectiveness metrics on dashboard** — Cache hit rate trends, efficiency scores per session, compaction rate over time. Surface diagnostic insights on the overview page (not just the autopsy CLI).
-3. **Tune iteratively** — Thresholds and formulas will need ongoing adjustment. This is not a one-time task — expect to revisit as more session data accumulates.
+1. **Effectiveness metrics on dashboard** — Cache hit rate trends, efficiency scores per session, compaction rate over time. Surface diagnostic insights on the overview page (not just the autopsy CLI). Add metrics directly; refactor into shared modules only when duplication becomes a real problem.
 
-### Phase 2: Per-Task Economics
-The novel differentiator. Moves aide from "you spent $X" to "test-writing costs 3x more than implementation, here's why." Informed by the agent-session-economist exploration in project-planner.
+### Phase 2: Polish + Launch
+Ship it, get feedback, build the portfolio signal.
 
-4. **Task segmentation** — Segment sessions into tasks using heuristics: user message boundaries, temporal gaps, file clustering, git commit correlation. This is the hard problem. Start with the simplest heuristic (user message boundaries) and iterate.
-5. **Per-task cost attribution** — Attribute token spend and cost to individual tasks within a session. Show which kinds of work (implementation, testing, debugging, exploration) cost the most.
-6. **Optimization recommendations** — "Your test-writing sessions cost 3x more because you're reading 15 files per test. Add these to CLAUDE.md and save ~$X/month." Extends the shared `recommendations.py` with task-level rules.
+2. Dashboard polish — responsive layout, date range selector, subscription badge
+3. README with screenshots
+4. PyPI packaging (`pip install aide-dashboard`)
+5. Blog post — METR study hook, personal findings
+6. Show HN
 
-### Phase 3: Polish + Launch
-7. Dashboard polish — responsive layout, date range selector, subscription badge
-8. README with screenshots
-9. PyPI packaging (`pip install aide-dashboard`)
-10. Blog post — METR study hook, personal findings
-11. Show HN
+### Phase 3: Per-Task Economics (post-launch)
+Informed by the agent-session-economist exploration in project-planner. Build after launch, informed by real usage.
+
+7. **Task segmentation** — Segment sessions into tasks using heuristics: user message boundaries, temporal gaps, file clustering, git commit correlation. Start with the simplest heuristic and iterate.
+8. **Per-task cost attribution** — Which kinds of work (implementation, testing, debugging, exploration) cost the most.
+9. **Optimization recommendations** — Actionable spend reduction suggestions based on task-level patterns.
 
 ### Evaluated and deferred
-- **Context Continuity Engine** — Auto-extract decisions/patterns from sessions and generate CLAUDE.md content. Deferred because: requires LLM calls (breaks zero-cost principle), high platform risk (Anthropic shipping native Session Memory), different category (generation vs analysis). The heuristic parts (repeated-read suggestions) are already in autopsy. Revisit if Anthropic's native solution falls short.
+- **Context Continuity Engine** — Auto-extract decisions/patterns from sessions and generate CLAUDE.md content. Deferred: requires LLM calls (breaks zero-cost principle), high platform risk (Anthropic shipping native Session Memory), different category (generation vs analysis). Heuristic parts already in autopsy suggestions.
 
 ## How to Work on This Project
 
