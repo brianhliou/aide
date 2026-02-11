@@ -4,14 +4,24 @@
 
 ## Project Overview
 
-**aide** — AI Developer Effectiveness toolkit. Ingests Claude Code JSONL session logs into SQLite and provides two analysis tools:
+**aide** — AI Developer Effectiveness tool. Ingests Claude Code JSONL session logs into SQLite and analyzes them: cost trends, token usage, session patterns, efficiency metrics, and actionable recommendations. The "Fitbit for AI coding."
 
-1. **Web Dashboard** (`aide serve`) — Flask dashboard showing cost trends, token usage, session patterns, and project comparisons across all sessions. The "Fitbit for AI coding."
-2. **Session Autopsy** (`aide autopsy <id>`) — Per-session diagnostic CLI that produces a Markdown report with cost breakdown, context window analysis, compaction detection, and CLAUDE.md improvement suggestions.
+aide is **one product** with multiple commands. Features are organized into layers, not separate projects.
 
-Both tools share the same ingestion pipeline and SQLite database. They are siblings — `aide.web` and `aide.autopsy` both import from core modules (`aide.db`, `aide.config`, `aide.cost`) but never from each other.
+Build brief: `~/projects/project-planner/briefs/ai-effectiveness-dashboard.md`
 
-Build brief with full context, milestones, and design decisions: `~/projects/project-planner/briefs/ai-effectiveness-dashboard.md`
+## Product Layers
+
+Every feature in aide fits into one of these layers:
+
+| Layer | Question it answers | Status |
+|-------|-------------------|--------|
+| **Ingestion** | "Get data in" | Done (`aide ingest`) |
+| **Descriptive** | "What happened?" | Done (dashboard: overview, projects, sessions, tools) |
+| **Diagnostic** | "What went wrong in this session?" | Done (`aide autopsy`, session detail page) |
+| **Effectiveness** | "Am I getting better?" | Not built — this is the differentiator |
+
+New features slot into a layer. They are not new "projects."
 
 ## Tech Stack
 
@@ -23,7 +33,6 @@ Build brief with full context, milestones, and design decisions: `~/projects/pro
 - **Database:** SQLite (stdlib sqlite3)
 - **CLI:** Click
 - **Config:** YAML (~/.config/aide/config.yaml)
-- **Task runner:** justfile
 
 ## Project Structure
 
@@ -35,55 +44,83 @@ src/aide/
 ├── cost.py         # Cost estimation logic
 ├── config.py       # YAML config loading + defaults
 ├── models.py       # Shared dataclasses (ParsedSession, ParsedMessage, ToolCall)
-├── web/
+├── web/            # Dashboard feature (descriptive layer)
 │   ├── app.py      # Flask app factory
 │   ├── routes.py   # Route handlers
 │   ├── queries.py  # SQL query functions for dashboard
-│   ├── templates/  # Jinja2 templates (base, overview, projects, sessions, tools)
+│   ├── templates/  # Jinja2 templates
 │   └── static/     # charts.js
-├── autopsy/
+├── autopsy/        # Session diagnostics feature (diagnostic layer)
 │   ├── analyzer.py    # 4 analyzer functions + dataclasses
 │   ├── queries.py     # DB queries for session analysis
 │   ├── report.py      # Markdown report renderer
-│   └── suggestions.py # CLAUDE.md suggestion rules engine
+│   └── suggestions.py # Recommendation rules engine
 └── __main__.py     # python -m aide entrypoint
 tests/
-├── conftest.py
-├── test_parser.py
-├── test_db.py
-├── test_cost.py
-├── test_web.py
-├── test_autopsy.py
+├── test_parser.py, test_db.py, test_cost.py
+├── test_web.py     # 90 tests for dashboard
+├── test_autopsy.py # 49 tests for diagnostics
 └── fixtures/
-    └── sample.jsonl
 ```
 
 ## Commands
 
-Run `just` to see all available commands. Key commands:
-
-- `just install` — install dependencies with uv
-- `just test` — run pytest
-- `just lint` — run ruff
-- `just ingest` — parse JSONL logs into SQLite
-- `just serve` — start dashboard at localhost:8787
-- `uv run aide autopsy <session-id>` — generate session diagnostic report
+```bash
+uv run aide ingest              # Parse new/changed logs
+uv run aide ingest --full       # Rebuild database from scratch
+uv run aide serve               # Start dashboard at localhost:8787
+uv run aide stats               # Print summary to terminal
+uv run aide autopsy <id>        # Diagnose a specific session
+uv run pytest                   # Run all 192 tests
+uv run ruff check src/ tests/   # Lint
+```
 
 ## Key Patterns
 
-- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → web dashboard / autopsy CLI
-- **Sibling architecture:** `aide.web` and `aide.autopsy` are independent sub-packages. Both read from the shared SQLite DB via core modules. Neither imports from the other.
-- **Incremental ingest:** Track file mtime in `ingest_log` table, skip unchanged files
+- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → dashboard / autopsy
+- **Sub-packages are features, not products.** `aide.web` and `aide.autopsy` are both features of aide. They import from core modules (`aide.db`, `aide.config`, `aide.cost`) but not from each other.
 - **Zero LLM calls:** All analysis is heuristic-based, no marginal cost
-- **Cost estimation:** API pricing by default, `subscription_user` flag for Pro/Max users shows "estimated equivalent" badge
-- **Context window size:** `input_tokens + cache_read_tokens + cache_creation_tokens` per API call (not just `input_tokens`)
-- **Project name derivation:** Extract from Claude log directory names (e.g., `-Users-brianliou-projects-slopfarm` → `slopfarm`)
-- **Pre-aggregated stats:** `daily_stats` table materialized on each ingest for fast dashboard queries
+- **Context window size:** `input_tokens + cache_read_tokens + cache_creation_tokens` per API call
+- **Incremental ingest:** Track file mtime in `ingest_log` table, skip unchanged files
+- **Cost estimation:** API pricing by default, `subscription_user` flag shows "estimated equivalent" badge
+
+## Adding New Features
+
+1. Decide which layer the feature belongs to (descriptive / diagnostic / effectiveness)
+2. If it computes a metric or recommendation, put the logic in a shared core module — not inside a sub-package
+3. Sub-packages (`web/`, `autopsy/`) are consumers of shared logic, not owners of it
+4. Metrics and recommendation thresholds should be constants at the top of the file — easy to find and tune
+
+### Where shared vs feature-specific code goes
+
+| Code type | Location |
+|-----------|----------|
+| Data models, parsing, ingestion | Core: `models.py`, `parser.py`, `db.py` |
+| Cost estimation | Core: `cost.py` |
+| Metric computation | Core: `metrics.py` (planned, currently in `autopsy/analyzer.py`) |
+| Recommendation rules | Core: `recommendations.py` (planned, currently in `autopsy/suggestions.py`) |
+| Dashboard UI | Feature: `web/` |
+| Session diagnostics | Feature: `autopsy/` |
+
+## Roadmap
+
+### Next: Effectiveness Layer
+The product differentiator. Without this, aide is just a cost dashboard.
+
+1. **Extract shared metrics** — Move metric computation (cache efficiency, compaction detection, cost categorization) and recommendation rules out of `autopsy/` into shared core modules (`metrics.py`, `recommendations.py`). Both dashboard and autopsy consume them.
+2. **Effectiveness metrics on dashboard** — Cache hit rate trends, efficiency scores per session, compaction rate over time. Surface diagnostic insights on the overview page.
+3. **Tune iteratively** — Thresholds and formulas will need adjustment as we learn what's actually useful. Keep them as named constants, easy to change.
+
+### Then: Polish + Launch
+4. Dashboard polish — responsive layout, date range selector, subscription badge
+5. README with screenshots
+6. PyPI packaging (`pip install aide-dashboard`)
+7. Blog post — METR study hook, personal findings
+8. Show HN
 
 ## How to Work on This Project
 
-1. Read the build brief: `~/projects/project-planner/briefs/ai-effectiveness-dashboard.md`
+1. Read this file and the build brief
 2. Check `git log --oneline -20` for recent changes
-3. Find the current milestone (first with incomplete tasks in the brief)
-4. Pick the next incomplete task and work on it
-5. Run `just check` before committing
+3. Pick the next item from the roadmap
+4. Run `uv run pytest && uv run ruff check src/ tests/` before committing
