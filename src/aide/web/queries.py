@@ -99,18 +99,32 @@ def get_daily_cost_series(db_path: Path, days: int = 90) -> list[dict]:
             (cutoff,),
         ).fetchall()
 
+        # Build a date→cost map, then fill gaps with $0
+        cost_map: dict[str, float] = {}
+        for row in rows:
+            cost_map[row["date"]] = row["cost"] or 0.0
+
+        if not cost_map:
+            return []
+
+        # Generate continuous date range
+        start = date.fromisoformat(min(cost_map))
+        end = date.fromisoformat(max(cost_map))
         result = []
         costs = []
-        for row in rows:
-            cost = row["cost"] or 0.0
+        current = start
+        while current <= end:
+            day_str = current.isoformat()
+            cost = cost_map.get(day_str, 0.0)
             costs.append(cost)
             window = costs[-7:]
             avg = sum(window) / len(window)
             result.append({
-                "date": row["date"],
+                "date": day_str,
                 "cost": round(cost, 4),
                 "cost_7d_avg": round(avg, 4),
             })
+            current += timedelta(days=1)
 
         return result
     finally:

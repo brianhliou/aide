@@ -39,9 +39,11 @@
                     <a href="/sessions?project={{ s.project_name }}" class="hover:text-blue-600">{{ s.project_name }}</a>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {% if s.duration_seconds %}
                     {% set hours = s.duration_seconds // 3600 %}
                     {% set minutes = (s.duration_seconds % 3600) // 60 %}
                     {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
+                    {% else %}&mdash;{% endif %}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.message_count }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.tool_call_count }}</td>

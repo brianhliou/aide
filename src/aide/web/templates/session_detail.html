@@ -25,9 +25,11 @@
     <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
         <div>
             <span class="font-semibold text-gray-900">Duration:</span>
+            {% if detail.duration_seconds %}
             {% set hours = detail.duration_seconds // 3600 %}
             {% set minutes = (detail.duration_seconds % 3600) // 60 %}
             {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
+            {% else %}&mdash;{% endif %}
         </div>
         <span class="text-gray-300">|</span>
         <div>
@@ -47,21 +49,28 @@
 <div class="bg-white rounded-lg shadow p-6 mb-6">
     <h2 class="text-lg font-semibold text-gray-900 mb-4">Tokens</h2>
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {% macro format_tokens(value) -%}
+            {%- if value >= 1000000000 -%}{{ "%.1f"|format(value / 1000000000) }}B
+            {%- elif value >= 1000000 -%}{{ "%.1f"|format(value / 1000000) }}M
+            {%- elif value >= 1000 -%}{{ (value / 1000)|round|int }}K
+            {%- else -%}{{ value }}
+            {%- endif -%}
+        {%- endmacro %}
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Input</div>
-            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_input_tokens / 1000)|round|int }}K</div>
+            <div class="text-2xl font-bold text-gray-900">{{ format_tokens(detail.total_input_tokens) }}</div>
         </div>
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Output</div>
-            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_output_tokens / 1000)|round|int }}K</div>
+            <div class="text-2xl font-bold text-gray-900">{{ format_tokens(detail.total_output_tokens) }}</div>
         </div>
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cache Read</div>
-            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_cache_read_tokens / 1000)|round|int }}K</div>
+            <div class="text-2xl font-bold text-gray-900">{{ format_tokens(detail.total_cache_read_tokens) }}</div>
         </div>
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cache Creation</div>
-            <div class="text-2xl font-bold text-gray-900">{{ (detail.total_cache_creation_tokens / 1000)|round|int }}K</div>
+            <div class="text-2xl font-bold text-gray-900">{{ format_tokens(detail.total_cache_creation_tokens) }}</div>
         </div>
     </div>
 </div>

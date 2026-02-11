@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Projects - aide{% endblock %}
+{% block title %}aide - Projects{% endblock %}
 
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Projects</h1>
@@ -57,6 +57,11 @@
                 </td>
             </tr>
             {% endfor %}
+            {% if not projects %}
+            <tr>
+                <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">No projects found. Run <code class="bg-gray-100 px-1 rounded">aide ingest</code> first.</td>
+            </tr>
+            {% endif %}
         </tbody>
     </table>
 </div>
