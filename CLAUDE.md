@@ -4,7 +4,12 @@
 
 ## Project Overview
 
-**aide** — AI Developer Effectiveness dashboard. Ingests Claude Code JSONL session logs into SQLite and serves a local web dashboard showing cost trends, token usage, session patterns, and efficiency metrics across all projects. The "Fitbit for AI coding."
+**aide** — AI Developer Effectiveness toolkit. Ingests Claude Code JSONL session logs into SQLite and provides two analysis tools:
+
+1. **Web Dashboard** (`aide serve`) — Flask dashboard showing cost trends, token usage, session patterns, and project comparisons across all sessions. The "Fitbit for AI coding."
+2. **Session Autopsy** (`aide autopsy <id>`) — Per-session diagnostic CLI that produces a Markdown report with cost breakdown, context window analysis, compaction detection, and CLAUDE.md improvement suggestions.
+
+Both tools share the same ingestion pipeline and SQLite database. They are siblings — `aide.web` and `aide.autopsy` both import from core modules (`aide.db`, `aide.config`, `aide.cost`) but never from each other.
 
 Build brief with full context, milestones, and design decisions: `~/projects/project-planner/briefs/ai-effectiveness-dashboard.md`
 
@@ -66,10 +71,12 @@ Run `just` to see all available commands. Key commands:
 
 ## Key Patterns
 
-- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → Flask dashboard / autopsy CLI
+- **Data flow:** `~/.claude/projects/**/*.jsonl` → parser → SQLite (aide.db) → web dashboard / autopsy CLI
+- **Sibling architecture:** `aide.web` and `aide.autopsy` are independent sub-packages. Both read from the shared SQLite DB via core modules. Neither imports from the other.
 - **Incremental ingest:** Track file mtime in `ingest_log` table, skip unchanged files
 - **Zero LLM calls:** All analysis is heuristic-based, no marginal cost
 - **Cost estimation:** API pricing by default, `subscription_user` flag for Pro/Max users shows "estimated equivalent" badge
+- **Context window size:** `input_tokens + cache_read_tokens + cache_creation_tokens` per API call (not just `input_tokens`)
 - **Project name derivation:** Extract from Claude log directory names (e.g., `-Users-brianliou-projects-slopfarm` → `slopfarm`)
 - **Pre-aggregated stats:** `daily_stats` table materialized on each ingest for fast dashboard queries
 

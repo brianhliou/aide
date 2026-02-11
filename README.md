@@ -1,8 +1,8 @@
 # aide
 
-> AI Developer Effectiveness dashboard. Track your AI coding productivity across all projects.
+> AI Developer Effectiveness toolkit. Track your AI coding productivity across all projects.
 
-aide ingests your Claude Code session logs and shows long-term trends — cost, token usage, session patterns, and efficiency metrics. The "Fitbit for AI coding."
+aide ingests your Claude Code session logs and gives you two tools to understand your AI usage: a **web dashboard** for long-term trends across projects, and **session autopsy** for deep-diving into individual sessions. The "Fitbit for AI coding."
 
 ## Why
 
@@ -12,25 +12,46 @@ The METR study found developers believe AI makes them 20% faster but were actual
 
 ```bash
 pip install aide-dashboard
-aide ingest    # Parse your Claude Code logs
-aide serve     # Open dashboard at localhost:8787
+aide ingest    # Parse your Claude Code logs into SQLite
+aide serve     # Open the dashboard at localhost:8787
+aide autopsy <session-id>   # Diagnose a specific session
 ```
 
-## What You Get
+## Two Tools, One Pipeline
 
-- **Cost tracking** — spend per day/week/month, per project, trending over time
-- **Session analysis** — duration, token usage, message counts, tool usage breakdown
-- **Project comparison** — which projects consume the most, which are most efficient
-- **Usage patterns** — session frequency, time of day, tool preferences
-- **Efficiency trends** — are you getting better at using AI over time?
-
-## How It Works
+aide has two distinct tools that share the same data pipeline:
 
 ```
-~/.claude/projects/**/*.jsonl → parser → SQLite → web dashboard
+~/.claude/projects/**/*.jsonl → parser → SQLite (aide.db) ─┬─→ Web Dashboard
+                                                            └─→ Session Autopsy
 ```
 
-aide reads Claude Code's local session logs (JSONL), parses them into a SQLite database, and serves a Chart.js dashboard. Zero LLM calls. Zero cost to run. All data stays local.
+### Web Dashboard (`aide serve`)
+
+A local Flask dashboard showing trends across all your projects and sessions:
+
+- **Cost tracking** — spend per day/week/month, per project, with 7-day moving average
+- **Session browser** — list, filter by project, drill into any session's tool/token breakdown
+- **Project comparison** — which projects consume the most, cost-per-session scatter plot
+- **Tool usage** — which tools you use most, usage over time, most-accessed files
+
+### Session Autopsy (`aide autopsy <session-id>`)
+
+A per-session diagnostic report printed as Markdown. Analyzes a single session and produces four sections:
+
+1. **Summary** — messages, tool calls, files modified/read, cost, tokens
+2. **Cost Analysis** — cost broken down by category (file reads, code generation, execution, orchestration, overhead), cache efficiency, most expensive turns
+3. **Context Analysis** — context window utilization curve, peak usage as % of 200K, compaction event detection with tokens-lost estimates
+4. **CLAUDE.md Suggestions** — actionable recommendations based on session patterns (files read repeatedly, low cache hit rate, excessive compactions, high tool call count)
+
+Example:
+
+```bash
+aide autopsy f982dfd8-65bd-4646-9272-16e0fb82f343
+aide autopsy f982dfd8 > report.md   # Pipe to file
+```
+
+Both tools are heuristic-based. Zero LLM calls. Zero cost to run. All data stays local.
 
 ## Commands
 
@@ -40,6 +61,7 @@ aide ingest --full       # Rebuild database from scratch
 aide serve               # Start dashboard at localhost:8787
 aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal
+aide autopsy <id>        # Diagnose a specific session
 ```
 
 ## Configuration
@@ -64,11 +86,11 @@ All data stays on your machine. No telemetry, no cloud, no accounts. aide reads 
 ## Development
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/brianhliou/aide.git
 cd aide
-just setup    # Install dependencies
-just test     # Run tests
-just serve    # Start dev server
+uv sync          # Install dependencies
+uv run pytest    # Run tests (192 tests)
+uv run aide serve   # Start dev server
 ```
 
 ## License
