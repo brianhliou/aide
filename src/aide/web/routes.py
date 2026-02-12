@@ -20,6 +20,7 @@ def overview():
         summary=queries.get_overview_summary(db_path),
         daily_costs=queries.get_daily_cost_series(db_path),
         weekly_sessions=queries.get_weekly_session_counts(db_path),
+        weekly_work_blocks=queries.get_weekly_work_block_counts(db_path),
         cost_by_project=queries.get_cost_by_project(db_path),
         token_breakdown=queries.get_token_breakdown(db_path),
         effectiveness=queries.get_effectiveness_summary(db_path),
@@ -81,6 +82,28 @@ def tools():
         tool_weekly=queries.get_tool_weekly(db_path),
         tool_daily=queries.get_tool_daily(db_path),
         top_files=queries.get_top_files(db_path),
+        top_commands=queries.get_top_bash_commands(db_path),
+        error_breakdown=queries.get_error_breakdown(db_path),
+        subscription_user=sub,
+    )
+
+
+@bp.route("/insights")
+def insights():
+    """Insights page with analytical findings from session data."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    return render_template(
+        "insights.html",
+        first_prompt=queries.get_first_prompt_analysis(db_path),
+        cost_concentration=queries.get_cost_concentration(db_path),
+        cost_per_edit=queries.get_cost_per_edit_by_duration(db_path),
+        model_breakdown=queries.get_model_breakdown(db_path),
+        tool_sequences=queries.get_tool_sequences(db_path),
+        time_patterns=queries.get_time_patterns(db_path),
+        response_times=queries.get_user_response_times(db_path),
+        thinking_stats=queries.get_thinking_stats(db_path),
+        permission_modes=queries.get_permission_mode_breakdown(db_path),
         subscription_user=sub,
     )
 

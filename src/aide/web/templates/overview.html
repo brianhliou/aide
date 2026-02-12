@@ -11,11 +11,12 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Last 30 Days</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.last_30d.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+            {{ summary.last_30d.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
-            {% if not subscription_user %}<span>{{ "${:,.2f}".format(summary.last_30d.cost) }}</span><span class="text-gray-300">|</span>{% endif %}
-            <span>{{ summary.last_30d.projects }} projects</span>
+            <span>{{ summary.last_30d.sessions }} sessions</span>
+            {% if not subscription_user %}<span class="text-gray-300">|</span><span>{{ "${:,.2f}".format(summary.last_30d.cost) }}</span>{% endif %}
+            <span class="text-gray-300">|</span><span>{{ summary.last_30d.projects }} projects</span>
         </div>
     </div>
 
@@ -23,11 +24,12 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">This Week</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.this_week.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+            {{ summary.this_week.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
-            {% if not subscription_user %}<span>{{ "${:,.2f}".format(summary.this_week.cost) }}</span><span class="text-gray-300">|</span>{% endif %}
-            <span>{{ summary.this_week.projects }} projects</span>
+            <span>{{ summary.this_week.sessions }} sessions</span>
+            {% if not subscription_user %}<span class="text-gray-300">|</span><span>{{ "${:,.2f}".format(summary.this_week.cost) }}</span>{% endif %}
+            <span class="text-gray-300">|</span><span>{{ summary.this_week.projects }} projects</span>
         </div>
     </div>
 
@@ -35,7 +37,7 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Today</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.today.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
+            {{ summary.today.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
         </div>
         <div class="text-sm text-gray-600">
             {% if not subscription_user %}{{ "${:,.2f}".format(summary.today.cost) }}{% else %}{{ summary.today.sessions }} session{{ "s" if summary.today.sessions != 1 else "" }} today{% endif %}
@@ -90,7 +92,7 @@
         </div>
     </div>
 
-    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
         <!-- Output Ratio -->
         <div class="bg-white rounded-lg shadow p-4" title="output / (input + output), excludes cache">
             <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Output Ratio</h3>
@@ -118,6 +120,37 @@
             <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Turns / Prompt</h3>
             <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.turns_per_user_prompt) }}</div>
             <div class="text-xs text-gray-400 mt-1">how agentic sessions are</div>
+        </div>
+
+        <!-- Tool Error Rate (with iteration context) -->
+        <div class="bg-white rounded-lg shadow p-4" title="tool errors / total tool calls — most errors are normal iteration (test/lint cycles)">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Error Rate</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.1%}".format(effectiveness.error_rate) }}</div>
+            <div class="text-xs text-gray-400 mt-1">% of tool calls that error</div>
+            {% if effectiveness.error_rate > 0 and effectiveness.iteration_error_pct > 0 %}
+            <div class="text-xs text-gray-500 mt-1">
+                {{ "{:.0%}".format(effectiveness.iteration_error_pct) }} from test/lint/build
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Cost Per Edit -->
+        {% if not subscription_user and effectiveness.cost_per_edit > 0 %}
+        <div class="bg-white rounded-lg shadow p-4" title="total cost / (edits + writes)">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cost / Edit</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "${:,.2f}".format(effectiveness.cost_per_edit) }}</div>
+            <div class="text-xs text-gray-400 mt-1">avg cost per file change</div>
+        </div>
+        {% endif %}
+
+        <!-- Rework Rate -->
+        <div class="bg-white rounded-lg shadow p-4" title="sessions with files edited 3+ times / total sessions">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Rework Rate</h3>
+            <div class="text-2xl font-bold {% if effectiveness.rework_rate > 0.5 %}text-amber-600{% else %}text-gray-900{% endif %}">{{ "{:.0%}".format(effectiveness.rework_rate) }}</div>
+            <div class="text-xs text-gray-400 mt-1">sessions with files edited 3+ times</div>
+            {% if effectiveness.rework_rate > 0.5 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Claude may need more context in CLAUDE.md</div>
+            {% endif %}
         </div>
     </div>
 
@@ -154,11 +187,11 @@
 </div>
 {% endif %}
 
-<!-- Sessions Per Week -->
+<!-- Work Blocks Per Week -->
 <div class="bg-white rounded-lg shadow p-6 mb-6">
-    <h2 class="text-lg font-semibold text-gray-900 mb-4">Sessions Per Week</h2>
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Work Blocks Per Week</h2>
     <div style="height: 300px;">
-        <canvas id="sessionsPerWeekChart"></canvas>
+        <canvas id="workBlocksPerWeekChart"></canvas>
     </div>
 </div>
 
@@ -188,7 +221,7 @@
 <script>
     // --- Data from server ---
     const dailyCosts = {{ daily_costs|tojson }};
-    const weeklySessions = {{ weekly_sessions|tojson }};
+    const weeklyWorkBlocks = {{ weekly_work_blocks|tojson }};
     const costByProject = {{ cost_by_project|tojson }};
     const tokenBreakdown = {{ token_breakdown|tojson }};
     const effectivenessTrends = {{ effectiveness_trends|tojson }};
@@ -328,11 +361,11 @@
         );
     }
 
-    // --- Sessions Per Week (bar chart) ---
+    // --- Work Blocks Per Week (bar chart) ---
     createBarChart(
-        "sessionsPerWeekChart",
-        weeklySessions.map(d => d.week_start),
-        weeklySessions.map(d => d.session_count),
+        "workBlocksPerWeekChart",
+        weeklyWorkBlocks.map(d => d.week_start),
+        weeklyWorkBlocks.map(d => d.work_block_count),
         {
             scales: {
                 y: {

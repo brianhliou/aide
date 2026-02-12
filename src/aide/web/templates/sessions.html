@@ -24,6 +24,7 @@
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tools</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Edits</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Errors</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
                 {% if not subscription_user %}
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
@@ -36,23 +37,35 @@
             <tr class="hover:bg-gray-50 transition-colors">
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
                     <a href="/sessions/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 font-medium">
+                        {% if s.custom_title %}
+                        {{ s.custom_title }}
+                        <span class="text-gray-400 font-normal block text-xs">{{ s.started_at[:10] }} {{ s.started_at[11:16] }}</span>
+                        {% else %}
                         {{ s.started_at[:10] }}
                         <span class="text-gray-400 font-normal">{{ s.started_at[11:16] }}</span>
+                        {% endif %}
                     </a>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                     <a href="/sessions?project={{ s.project_name }}" class="hover:text-blue-600">{{ s.project_name }}</a>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    {% if s.duration_seconds %}
-                    {% set hours = s.duration_seconds // 3600 %}
-                    {% set minutes = (s.duration_seconds % 3600) // 60 %}
+                    {% set dur = s.active_duration_seconds if s.active_duration_seconds else s.duration_seconds %}
+                    {% if dur %}
+                    {% set hours = dur // 3600 %}
+                    {% set minutes = (dur % 3600) // 60 %}
                     {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
+                    {% if s.work_block_count and s.work_block_count > 1 %}
+                    <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700" title="{{ s.work_block_count }} work blocks">{{ s.work_block_count }}b</span>
+                    {% endif %}
                     {% else %}&mdash;{% endif %}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.message_count }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.tool_call_count }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.edits }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-right {% if s.tool_error_count > 0 %}text-red-600{% else %}text-gray-700{% endif %}">
+                    {{ s.tool_error_count if s.tool_error_count > 0 else "" }}
+                </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
                     {%- if s.total_tokens >= 1000000 -%}{{ "%.1f"|format(s.total_tokens / 1000000) }}M
                     {%- elif s.total_tokens >= 1000 -%}{{ (s.total_tokens // 1000)|int }}K
@@ -70,7 +83,7 @@
             {% endfor %}
             {% if not sessions %}
             <tr>
-                <td colspan="{{ 8 if subscription_user else 9 }}" class="px-6 py-12 text-center text-sm text-gray-500">No sessions found.</td>
+                <td colspan="{{ 9 if subscription_user else 10 }}" class="px-6 py-12 text-center text-sm text-gray-500">No sessions found.</td>
             </tr>
             {% endif %}
         </tbody>

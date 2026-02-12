@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 from aide.db import (
+    _migrate_db,
     get_ingested_file,
     get_summary_stats,
     ingest_sessions,
@@ -10,7 +11,7 @@ from aide.db import (
     log_ingestion,
     rebuild_daily_stats,
 )
-from aide.models import ParsedMessage, ParsedSession, ToolCall
+from aide.models import ParsedMessage, ParsedSession, ToolCall, WorkBlock
 
 
 def _make_session(
@@ -115,7 +116,7 @@ def test_init_db_creates_tables(tmp_db):
     }
     con.close()
 
-    expected = {"sessions", "messages", "tool_calls", "daily_stats", "ingest_log"}
+    expected = {"sessions", "messages", "tool_calls", "daily_stats", "ingest_log", "work_blocks"}
     assert expected.issubset(tables)
 
 
@@ -453,3 +454,462 @@ def test_log_ingestion_replace(tmp_db):
     count = con.execute("SELECT COUNT(*) FROM ingest_log").fetchone()[0]
     con.close()
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# New column storage tests
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_stores_new_session_fields(tmp_db):
+    """New session fields are stored correctly."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    session.custom_title = "Fix auth bug"
+    session.total_turn_duration_ms = 25000
+    session.turn_count = 3
+    session.max_turn_duration_ms = 12000
+    session.tool_error_count = 2
+    session.git_branch = "feature/auth"
+    session.rework_file_count = 1
+    session.test_after_edit_rate = 0.75
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT * FROM sessions WHERE session_id = ?", ("sess-001",)
+    ).fetchone()
+    con.close()
+
+    assert row["custom_title"] == "Fix auth bug"
+    assert row["total_turn_duration_ms"] == 25000
+    assert row["turn_count"] == 3
+    assert row["max_turn_duration_ms"] == 12000
+    assert row["tool_error_count"] == 2
+    assert row["git_branch"] == "feature/auth"
+    assert row["rework_file_count"] == 1
+    assert abs(row["test_after_edit_rate"] - 0.75) < 1e-6
+
+
+def test_ingest_stores_new_message_fields(tmp_db):
+    """New message fields (model, stop_reason, prompt_length) are stored."""
+    import sqlite3
+
+    init_db(tmp_db)
+    ts = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    messages = [
+        ParsedMessage(
+            uuid="msg-u1",
+            parent_uuid=None,
+            session_id="sess-001",
+            timestamp=ts,
+            role="user",
+            type="user",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            content_length=42,
+            prompt_length=42,
+        ),
+        ParsedMessage(
+            uuid="msg-a1",
+            parent_uuid="msg-u1",
+            session_id="sess-001",
+            timestamp=ts,
+            role="assistant",
+            type="assistant",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=200,
+            cache_creation_tokens=50,
+            content_length=256,
+            model="claude-sonnet-4-5-20250929",
+            stop_reason="end_turn",
+        ),
+    ]
+    session = _make_session(messages=messages)
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    msgs = con.execute(
+        "SELECT * FROM messages WHERE session_id = ? ORDER BY message_uuid",
+        ("sess-001",),
+    ).fetchall()
+    con.close()
+
+    asst = [m for m in msgs if m["role"] == "assistant"][0]
+    assert asst["model"] == "claude-sonnet-4-5-20250929"
+    assert asst["stop_reason"] == "end_turn"
+
+    user = [m for m in msgs if m["role"] == "user"][0]
+    assert user["prompt_length"] == 42
+
+
+def test_ingest_stores_new_tool_call_fields(tmp_db):
+    """New tool_call fields are stored correctly."""
+    import sqlite3
+
+    init_db(tmp_db)
+    ts = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    messages = [
+        ParsedMessage(
+            uuid="msg-001",
+            parent_uuid=None,
+            session_id="sess-001",
+            timestamp=ts,
+            role="assistant",
+            type="assistant",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=200,
+            cache_creation_tokens=50,
+            content_length=256,
+            tool_calls=[
+                ToolCall(
+                    tool_name="Bash",
+                    file_path=None,
+                    timestamp=ts,
+                    tool_use_id="toolu_123",
+                    command="pytest -v",
+                    description="Run tests",
+                    is_error=True,
+                ),
+                ToolCall(
+                    tool_name="Edit",
+                    file_path="/src/main.py",
+                    timestamp=ts,
+                    tool_use_id="toolu_456",
+                    old_string_len=50,
+                    new_string_len=75,
+                ),
+            ],
+        ),
+    ]
+    session = _make_session(messages=messages)
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    tcs = con.execute(
+        "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY tool_name",
+        ("sess-001",),
+    ).fetchall()
+    con.close()
+
+    bash_tc = [t for t in tcs if t["tool_name"] == "Bash"][0]
+    assert bash_tc["tool_use_id"] == "toolu_123"
+    assert bash_tc["command"] == "pytest -v"
+    assert bash_tc["description"] == "Run tests"
+    assert bash_tc["is_error"] == 1
+
+    edit_tc = [t for t in tcs if t["tool_name"] == "Edit"][0]
+    assert edit_tc["tool_use_id"] == "toolu_456"
+    assert edit_tc["old_string_len"] == 50
+    assert edit_tc["new_string_len"] == 75
+    assert edit_tc["is_error"] == 0
+
+
+def test_migrate_adds_all_new_columns(tmp_db):
+    """Migration adds all new columns to all three tables."""
+    import sqlite3
+
+    # Create full old schema (all 3 tables, without new columns)
+    con = sqlite3.connect(tmp_db)
+    con.executescript("""
+        CREATE TABLE sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL UNIQUE,
+            project_path TEXT NOT NULL,
+            project_name TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            duration_seconds INTEGER,
+            total_input_tokens INTEGER DEFAULT 0,
+            total_output_tokens INTEGER DEFAULT 0,
+            total_cache_read_tokens INTEGER DEFAULT 0,
+            total_cache_creation_tokens INTEGER DEFAULT 0,
+            estimated_cost_usd REAL,
+            message_count INTEGER DEFAULT 0,
+            user_message_count INTEGER DEFAULT 0,
+            assistant_message_count INTEGER DEFAULT 0,
+            tool_call_count INTEGER DEFAULT 0,
+            file_read_count INTEGER DEFAULT 0,
+            file_write_count INTEGER DEFAULT 0,
+            file_edit_count INTEGER DEFAULT 0,
+            bash_count INTEGER DEFAULT 0,
+            source_file TEXT NOT NULL,
+            ingested_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            message_uuid TEXT NOT NULL,
+            parent_uuid TEXT,
+            role TEXT NOT NULL,
+            type TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_creation_tokens INTEGER DEFAULT 0,
+            content_length INTEGER DEFAULT 0,
+            has_tool_use INTEGER DEFAULT 0,
+            tool_names TEXT
+        );
+        CREATE TABLE tool_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            message_uuid TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            file_path TEXT,
+            timestamp TEXT NOT NULL
+        );
+    """)
+    con.commit()
+    con.close()
+
+    _migrate_db(tmp_db)
+
+    con = sqlite3.connect(tmp_db)
+    session_cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+    msg_cols = {row[1] for row in con.execute("PRAGMA table_info(messages)").fetchall()}
+    tc_cols = {row[1] for row in con.execute("PRAGMA table_info(tool_calls)").fetchall()}
+    con.close()
+
+    # Sessions new columns
+    for col in ["custom_title", "total_turn_duration_ms", "turn_count",
+                "max_turn_duration_ms", "tool_error_count", "git_branch",
+                "rework_file_count", "test_after_edit_rate",
+                "compaction_count", "peak_context_tokens"]:
+        assert col in session_cols, f"Missing session column: {col}"
+
+    # Messages new columns
+    for col in ["model", "stop_reason", "prompt_length"]:
+        assert col in msg_cols, f"Missing message column: {col}"
+
+    # Tool calls new columns
+    for col in ["tool_use_id", "command", "description", "is_error",
+                "old_string_len", "new_string_len"]:
+        assert col in tc_cols, f"Missing tool_call column: {col}"
+
+
+def test_ingest_stores_thinking_fields(tmp_db):
+    """Thinking fields (total_thinking_chars, thinking_message_count) are stored."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    session.total_thinking_chars = 5000
+    session.thinking_message_count = 8
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT total_thinking_chars, thinking_message_count FROM sessions WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()
+    con.close()
+
+    assert row["total_thinking_chars"] == 5000
+    assert row["thinking_message_count"] == 8
+
+
+def test_ingest_stores_permission_mode(tmp_db):
+    """Permission mode is stored in sessions table."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    session.permission_mode = "acceptEdits"
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT permission_mode FROM sessions WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()
+    con.close()
+
+    assert row["permission_mode"] == "acceptEdits"
+
+
+def test_migrate_adds_thinking_and_permission_columns(tmp_db):
+    """Migration adds thinking and permission_mode columns."""
+    import sqlite3
+
+    # Create schema without thinking/permission columns
+    con = sqlite3.connect(tmp_db)
+    con.execute("""CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        project_path TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        duration_seconds INTEGER,
+        total_input_tokens INTEGER DEFAULT 0,
+        total_output_tokens INTEGER DEFAULT 0,
+        total_cache_read_tokens INTEGER DEFAULT 0,
+        total_cache_creation_tokens INTEGER DEFAULT 0,
+        estimated_cost_usd REAL,
+        message_count INTEGER DEFAULT 0,
+        user_message_count INTEGER DEFAULT 0,
+        assistant_message_count INTEGER DEFAULT 0,
+        tool_call_count INTEGER DEFAULT 0,
+        file_read_count INTEGER DEFAULT 0,
+        file_write_count INTEGER DEFAULT 0,
+        file_edit_count INTEGER DEFAULT 0,
+        bash_count INTEGER DEFAULT 0,
+        source_file TEXT NOT NULL,
+        ingested_at TEXT DEFAULT (datetime('now'))
+    )""")
+    con.commit()
+    con.close()
+
+    _migrate_db(tmp_db)
+
+    con = sqlite3.connect(tmp_db)
+    cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+    con.close()
+
+    assert "total_thinking_chars" in cols
+    assert "thinking_message_count" in cols
+    assert "permission_mode" in cols
+
+
+# ---------------------------------------------------------------------------
+# Work blocks storage tests
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_stores_work_blocks(tmp_db):
+    """Work blocks are stored in the work_blocks table."""
+    import sqlite3
+
+    init_db(tmp_db)
+    started = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    ended = datetime(2025, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+    session = _make_session(started_at=started, ended_at=ended)
+    session.active_duration_seconds = 1800
+    session.work_blocks = [
+        WorkBlock(
+            session_id="sess-001",
+            block_index=0,
+            started_at=started,
+            ended_at=ended,
+            duration_seconds=1800,
+            message_count=2,
+        ),
+    ]
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    wbs = con.execute(
+        "SELECT * FROM work_blocks WHERE session_id = ? ORDER BY block_index",
+        ("sess-001",),
+    ).fetchall()
+    con.close()
+
+    assert len(wbs) == 1
+    assert wbs[0]["block_index"] == 0
+    assert wbs[0]["duration_seconds"] == 1800
+    assert wbs[0]["message_count"] == 2
+
+
+def test_ingest_stores_multiple_work_blocks(tmp_db):
+    """Multiple work blocks are stored correctly."""
+    import sqlite3
+
+    init_db(tmp_db)
+    t1 = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2025, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+    t3 = datetime(2025, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+    t4 = datetime(2025, 1, 15, 15, 0, 0, tzinfo=timezone.utc)
+    session = _make_session(started_at=t1, ended_at=t4)
+    session.active_duration_seconds = 5400  # 1.5 hours total
+    session.work_blocks = [
+        WorkBlock(
+            session_id="sess-001", block_index=0,
+            started_at=t1, ended_at=t2,
+            duration_seconds=1800, message_count=5,
+        ),
+        WorkBlock(
+            session_id="sess-001", block_index=1,
+            started_at=t3, ended_at=t4,
+            duration_seconds=3600, message_count=8,
+        ),
+    ]
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    wbs = con.execute(
+        "SELECT * FROM work_blocks WHERE session_id = ? ORDER BY block_index",
+        ("sess-001",),
+    ).fetchall()
+    row = con.execute(
+        "SELECT active_duration_seconds FROM sessions WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()
+    con.close()
+
+    assert len(wbs) == 2
+    assert wbs[0]["block_index"] == 0
+    assert wbs[1]["block_index"] == 1
+    assert wbs[1]["duration_seconds"] == 3600
+    assert row["active_duration_seconds"] == 5400
+
+
+def test_reingest_clears_work_blocks(tmp_db):
+    """Re-ingesting a session replaces work blocks, not duplicates."""
+    import sqlite3
+
+    init_db(tmp_db)
+    t1 = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    t2 = datetime(2025, 1, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+    session_v1 = _make_session(started_at=t1, ended_at=t2)
+    session_v1.active_duration_seconds = 1800
+    session_v1.work_blocks = [
+        WorkBlock(
+            session_id="sess-001", block_index=0,
+            started_at=t1, ended_at=t2,
+            duration_seconds=1800, message_count=2,
+        ),
+    ]
+    ingest_sessions(tmp_db, [session_v1])
+
+    # Re-ingest with 2 blocks
+    t3 = datetime(2025, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
+    session_v2 = _make_session(started_at=t1, ended_at=t3)
+    session_v2.active_duration_seconds = 3600
+    session_v2.work_blocks = [
+        WorkBlock(
+            session_id="sess-001", block_index=0,
+            started_at=t1, ended_at=t2,
+            duration_seconds=1800, message_count=2,
+        ),
+        WorkBlock(
+            session_id="sess-001", block_index=1,
+            started_at=t3, ended_at=t3,
+            duration_seconds=0, message_count=1,
+        ),
+    ]
+    ingest_sessions(tmp_db, [session_v2])
+
+    con = sqlite3.connect(tmp_db)
+    wb_count = con.execute(
+        "SELECT COUNT(*) FROM work_blocks WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()[0]
+    con.close()
+
+    assert wb_count == 2  # not 3

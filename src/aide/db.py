@@ -31,6 +31,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     bash_count INTEGER DEFAULT 0,
     compaction_count INTEGER DEFAULT 0,
     peak_context_tokens INTEGER DEFAULT 0,
+    custom_title TEXT,
+    total_turn_duration_ms INTEGER DEFAULT 0,
+    turn_count INTEGER DEFAULT 0,
+    max_turn_duration_ms INTEGER DEFAULT 0,
+    tool_error_count INTEGER DEFAULT 0,
+    git_branch TEXT,
+    rework_file_count INTEGER DEFAULT 0,
+    test_after_edit_rate REAL DEFAULT 0.0,
+    total_thinking_chars INTEGER DEFAULT 0,
+    thinking_message_count INTEGER DEFAULT 0,
+    permission_mode TEXT,
+    active_duration_seconds INTEGER DEFAULT 0,
     source_file TEXT NOT NULL,
     ingested_at TEXT DEFAULT (datetime('now'))
 );
@@ -50,6 +62,9 @@ CREATE TABLE IF NOT EXISTS messages (
     content_length INTEGER DEFAULT 0,
     has_tool_use INTEGER DEFAULT 0,
     tool_names TEXT,
+    model TEXT,
+    stop_reason TEXT,
+    prompt_length INTEGER DEFAULT 0,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
@@ -60,7 +75,25 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     tool_name TEXT NOT NULL,
     file_path TEXT,
     timestamp TEXT NOT NULL,
+    tool_use_id TEXT,
+    command TEXT,
+    description TEXT,
+    is_error INTEGER DEFAULT 0,
+    old_string_len INTEGER,
+    new_string_len INTEGER,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS work_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    block_index INTEGER NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
+    UNIQUE(session_id, block_index)
 );
 
 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -102,11 +135,57 @@ def _migrate_db(db_path: Path) -> None:
     """Add columns that may be missing from older databases."""
     con = sqlite3.connect(db_path)
     try:
-        cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
-        if "compaction_count" not in cols:
-            con.execute("ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0")
-        if "peak_context_tokens" not in cols:
-            con.execute("ALTER TABLE sessions ADD COLUMN peak_context_tokens INTEGER DEFAULT 0")
+        # --- sessions table ---
+        session_cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+        session_migrations = {
+            "compaction_count": "INTEGER DEFAULT 0",
+            "peak_context_tokens": "INTEGER DEFAULT 0",
+            "custom_title": "TEXT",
+            "total_turn_duration_ms": "INTEGER DEFAULT 0",
+            "turn_count": "INTEGER DEFAULT 0",
+            "max_turn_duration_ms": "INTEGER DEFAULT 0",
+            "tool_error_count": "INTEGER DEFAULT 0",
+            "git_branch": "TEXT",
+            "rework_file_count": "INTEGER DEFAULT 0",
+            "test_after_edit_rate": "REAL DEFAULT 0.0",
+            "total_thinking_chars": "INTEGER DEFAULT 0",
+            "thinking_message_count": "INTEGER DEFAULT 0",
+            "permission_mode": "TEXT",
+            "active_duration_seconds": "INTEGER DEFAULT 0",
+        }
+        for col, col_type in session_migrations.items():
+            if col not in session_cols:
+                con.execute(f"ALTER TABLE sessions ADD COLUMN {col} {col_type}")
+
+        # --- messages table (may not exist in old schemas) ---
+        msg_cols_rows = con.execute("PRAGMA table_info(messages)").fetchall()
+        msg_cols = {row[1] for row in msg_cols_rows}
+        msg_migrations = {
+            "model": "TEXT",
+            "stop_reason": "TEXT",
+            "prompt_length": "INTEGER DEFAULT 0",
+        }
+        if msg_cols_rows:
+            for col, col_type in msg_migrations.items():
+                if col not in msg_cols:
+                    con.execute(f"ALTER TABLE messages ADD COLUMN {col} {col_type}")
+
+        # --- tool_calls table (may not exist in old schemas) ---
+        tc_cols_rows = con.execute("PRAGMA table_info(tool_calls)").fetchall()
+        tc_cols = {row[1] for row in tc_cols_rows}
+        tc_migrations = {
+            "tool_use_id": "TEXT",
+            "command": "TEXT",
+            "description": "TEXT",
+            "is_error": "INTEGER DEFAULT 0",
+            "old_string_len": "INTEGER",
+            "new_string_len": "INTEGER",
+        }
+        if tc_cols_rows:
+            for col, col_type in tc_migrations.items():
+                if col not in tc_cols:
+                    con.execute(f"ALTER TABLE tool_calls ADD COLUMN {col} {col_type}")
+
         con.commit()
     finally:
         con.close()
@@ -133,6 +212,9 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
             con.execute(
                 "DELETE FROM tool_calls WHERE session_id = ?", (s.session_id,)
             )
+            con.execute(
+                "DELETE FROM work_blocks WHERE session_id = ?", (s.session_id,)
+            )
 
             # Upsert session
             con.execute(
@@ -143,8 +225,19 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                     estimated_cost_usd, message_count, user_message_count,
                     assistant_message_count, tool_call_count, file_read_count,
                     file_write_count, file_edit_count, bash_count,
-                    compaction_count, peak_context_tokens, source_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    compaction_count, peak_context_tokens,
+                    custom_title, total_turn_duration_ms, turn_count,
+                    max_turn_duration_ms, tool_error_count, git_branch,
+                    rework_file_count, test_after_edit_rate,
+                    total_thinking_chars, thinking_message_count,
+                    permission_mode, active_duration_seconds,
+                    source_file
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?
+                )""",
                 (
                     s.session_id,
                     s.project_path,
@@ -167,6 +260,18 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                     s.bash_count,
                     s.compaction_count,
                     s.peak_context_tokens,
+                    s.custom_title,
+                    s.total_turn_duration_ms,
+                    s.turn_count,
+                    s.max_turn_duration_ms,
+                    s.tool_error_count,
+                    s.git_branch,
+                    s.rework_file_count,
+                    s.test_after_edit_rate,
+                    s.total_thinking_chars,
+                    s.thinking_message_count,
+                    s.permission_mode,
+                    s.active_duration_seconds,
                     s.source_file,
                 ),
             )
@@ -183,8 +288,9 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                         session_id, message_uuid, parent_uuid, role, type,
                         timestamp, input_tokens, output_tokens,
                         cache_read_tokens, cache_creation_tokens,
-                        content_length, has_tool_use, tool_names
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        content_length, has_tool_use, tool_names,
+                        model, stop_reason, prompt_length
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         s.session_id,
                         m.uuid,
@@ -199,6 +305,9 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                         m.content_length,
                         1 if m.tool_calls else 0,
                         tool_names,
+                        m.model,
+                        m.stop_reason,
+                        m.prompt_length,
                     ),
                 )
 
@@ -206,16 +315,41 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                 for tc in m.tool_calls:
                     con.execute(
                         """INSERT INTO tool_calls (
-                            session_id, message_uuid, tool_name, file_path, timestamp
-                        ) VALUES (?, ?, ?, ?, ?)""",
+                            session_id, message_uuid, tool_name, file_path, timestamp,
+                            tool_use_id, command, description, is_error,
+                            old_string_len, new_string_len
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             s.session_id,
                             m.uuid,
                             tc.tool_name,
                             tc.file_path,
                             tc.timestamp.isoformat(),
+                            tc.tool_use_id,
+                            tc.command,
+                            tc.description,
+                            1 if tc.is_error else 0,
+                            tc.old_string_len,
+                            tc.new_string_len,
                         ),
                     )
+
+            # Insert work_blocks
+            for wb in s.work_blocks:
+                con.execute(
+                    """INSERT INTO work_blocks (
+                        session_id, block_index, started_at, ended_at,
+                        duration_seconds, message_count
+                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        s.session_id,
+                        wb.block_index,
+                        wb.started_at.isoformat(),
+                        wb.ended_at.isoformat(),
+                        wb.duration_seconds,
+                        wb.message_count,
+                    ),
+                )
 
         con.commit()
         return len(sessions)

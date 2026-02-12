@@ -11,12 +11,33 @@ from datetime import datetime
 
 
 @dataclass
+class WorkBlock:
+    """A continuous stretch of activity within a session.
+
+    Sessions are split into work blocks at gaps > 30 minutes of inactivity.
+    """
+
+    session_id: str
+    block_index: int  # 0-based within the session
+    started_at: datetime
+    ended_at: datetime
+    duration_seconds: int
+    message_count: int
+
+
+@dataclass
 class ToolCall:
     """A single tool invocation extracted from an assistant message."""
 
     tool_name: str
     file_path: str | None
     timestamp: datetime
+    tool_use_id: str | None = None
+    command: str | None = None
+    description: str | None = None
+    is_error: bool = False
+    old_string_len: int | None = None
+    new_string_len: int | None = None
 
 
 @dataclass
@@ -35,6 +56,10 @@ class ParsedMessage:
     cache_creation_tokens: int
     content_length: int
     tool_calls: list[ToolCall] = field(default_factory=list)
+    model: str | None = None
+    stop_reason: str | None = None
+    prompt_length: int = 0
+    thinking_chars: int = 0
 
 
 @dataclass
@@ -69,3 +94,16 @@ class ParsedSession:
     bash_count: int
     compaction_count: int = 0
     peak_context_tokens: int = 0
+    custom_title: str | None = None
+    total_turn_duration_ms: int = 0
+    turn_count: int = 0
+    max_turn_duration_ms: int = 0
+    tool_error_count: int = 0
+    git_branch: str | None = None
+    rework_file_count: int = 0
+    test_after_edit_rate: float = 0.0
+    total_thinking_chars: int = 0
+    thinking_message_count: int = 0
+    permission_mode: str | None = None
+    active_duration_seconds: int = 0
+    work_blocks: list[WorkBlock] = field(default_factory=list)

@@ -1,0 +1,491 @@
+{% extends "base.html" %}
+
+{% block title %}aide - Insights{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold mb-6">Insights</h1>
+
+{# --- First Prompt Effectiveness --- #}
+{% if first_prompt.buckets %}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-1">First Prompt Effectiveness</h2>
+    <p class="text-xs text-gray-500 mb-4">Sessions with detailed first prompts cost less and produce fewer errors.</p>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div style="height: 280px;">
+            <canvas id="firstPromptChart"></canvas>
+        </div>
+        <div>
+            <table class="min-w-full text-sm">
+                <thead>
+                    <tr class="border-b border-gray-200">
+                        <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">Prompt Length</th>
+                        <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Sessions</th>
+                        {% if not subscription_user %}
+                        <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Avg Cost</th>
+                        {% endif %}
+                        <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Avg Errors</th>
+                        <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Avg Edits</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for b in first_prompt.buckets %}
+                    <tr class="border-b border-gray-100">
+                        <td class="py-2 font-medium text-gray-900">{{ b.label }}</td>
+                        <td class="py-2 text-right text-gray-700">{{ b.n }}</td>
+                        {% if not subscription_user %}
+                        <td class="py-2 text-right text-gray-700">{{ "${:,.2f}".format(b.avg_cost) }}</td>
+                        {% endif %}
+                        <td class="py-2 text-right text-gray-700">{{ "{:.1f}".format(b.avg_errors) }}</td>
+                        <td class="py-2 text-right text-gray-700">{{ "{:.1f}".format(b.avg_edits) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% if first_prompt.buckets|length >= 2 %}
+            {% set first = first_prompt.buckets[0] %}
+            {% set last = first_prompt.buckets[-1] %}
+            {% if first.avg_cost > last.avg_cost and last.avg_cost > 0 %}
+            <div class="mt-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
+                Detailed first prompts ({{ last.label }}) average
+                {{ "{:.0%}".format(1 - last.avg_cost / first.avg_cost) }} less cost
+                and {{ "{:.0%}".format(1 - last.avg_errors / first.avg_errors) if first.avg_errors > 0 else "fewer" }} fewer errors
+                than short ones ({{ first.label }}).
+            </div>
+            {% endif %}
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# --- Cost Concentration --- #}
+{% if not subscription_user and cost_concentration.sessions %}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-1">Cost Concentration</h2>
+    <p class="text-xs text-gray-500 mb-4">How cost is distributed across sessions — a few whale sessions often drive most of the spend.</p>
+    <div class="grid grid-cols-3 gap-4 mb-4">
+        <div class="bg-gray-50 rounded-lg p-3 text-center">
+            <div class="text-xs font-medium uppercase text-gray-500 mb-1">Top 3 Sessions</div>
+            <div class="text-xl font-bold text-gray-900">{{ "{:.0%}".format(cost_concentration.top3_pct) }}</div>
+            <div class="text-xs text-gray-400">of total cost</div>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-3 text-center">
+            <div class="text-xs font-medium uppercase text-gray-500 mb-1">Median Session</div>
+            <div class="text-xl font-bold text-gray-900">{{ "${:,.2f}".format(cost_concentration.median) }}</div>
+        </div>
+        <div class="bg-gray-50 rounded-lg p-3 text-center">
+            <div class="text-xs font-medium uppercase text-gray-500 mb-1">p90</div>
+            <div class="text-xl font-bold text-gray-900">{{ "${:,.2f}".format(cost_concentration.p90) }}</div>
+        </div>
+    </div>
+    <table class="min-w-full text-sm">
+        <thead>
+            <tr class="border-b border-gray-200">
+                <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">Session</th>
+                <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">Project</th>
+                <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Cost</th>
+                <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Cumulative</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in cost_concentration.sessions %}
+            <tr class="border-b border-gray-100 hover:bg-gray-50">
+                <td class="py-2">
+                    <a href="/sessions/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 font-medium">
+                        {{ s.custom_title or s.started_at[:10] }}
+                    </a>
+                </td>
+                <td class="py-2 text-gray-700">{{ s.project_name }}</td>
+                <td class="py-2 text-right font-medium text-gray-900">{{ "${:,.2f}".format(s.cost) }}</td>
+                <td class="py-2 text-right text-gray-500">{{ "{:.0%}".format(s.cumulative_pct) }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
+{# --- Cost Per Edit by Duration --- #}
+{% if cost_per_edit %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Cost Per Edit</h2>
+        <p class="text-xs text-gray-500 mb-4">Longer sessions are slightly more cost-efficient per edit.</p>
+        <div style="height: 260px;">
+            <canvas id="costPerEditChart"></canvas>
+        </div>
+    </div>
+
+    {# --- Model Usage --- #}
+    {% if model_breakdown %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Model Usage</h2>
+        <p class="text-xs text-gray-500 mb-4">Which models Claude Code uses and their relative cost.</p>
+        <div style="height: 200px; margin-bottom: 16px;">
+            <canvas id="modelChart"></canvas>
+        </div>
+        <div class="space-y-1 text-sm">
+            {% for m in model_breakdown %}
+            <div class="flex items-center justify-between">
+                <span class="font-mono text-xs text-gray-700">{{ m.model_short }}</span>
+                <span class="text-gray-500">{{ "{:,}".format(m.msg_count) }} msgs{% if not subscription_user %} · ~{{ "${:,.0f}".format(m.estimated_cost) }}{% endif %}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{# --- Time Patterns --- #}
+{% if time_patterns.by_hour %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Work Blocks by Hour</h2>
+        <p class="text-xs text-gray-500 mb-4">When you start focused coding blocks.</p>
+        <div style="height: 260px;">
+            <canvas id="hourChart"></canvas>
+        </div>
+    </div>
+    {% if time_patterns.by_day %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Work Blocks by Day</h2>
+        <p class="text-xs text-gray-500 mb-4">Day-of-week work patterns.</p>
+        <div style="height: 260px;">
+            <canvas id="dayChart"></canvas>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{# --- Thinking + Permission Mode --- #}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    {% if thinking_stats.sessions_with_thinking > 0 %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Thinking Blocks</h2>
+        <p class="text-xs text-gray-500 mb-4">Extended thinking usage — sessions where Claude reasons before acting.</p>
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+                <div class="text-xs font-medium uppercase text-gray-500 mb-1">Sessions w/ Thinking</div>
+                <div class="text-xl font-bold text-gray-900">
+                    {{ thinking_stats.sessions_with_thinking }}/{{ thinking_stats.total_sessions }}
+                </div>
+                <div class="text-xs text-gray-400">
+                    {{ "{:.0%}".format(thinking_stats.sessions_with_thinking / thinking_stats.total_sessions) if thinking_stats.total_sessions > 0 else "0%" }}
+                </div>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+                <div class="text-xs font-medium uppercase text-gray-500 mb-1">Avg Thinking</div>
+                <div class="text-xl font-bold text-gray-900">
+                    {% set avg_k = thinking_stats.avg_thinking_chars / 1000 %}
+                    {{ "{:.0f}K".format(avg_k) if avg_k >= 1 else "{:.0f}".format(thinking_stats.avg_thinking_chars) }}
+                </div>
+                <div class="text-xs text-gray-400">chars per session</div>
+            </div>
+        </div>
+        {% if thinking_stats.by_session %}
+        <table class="min-w-full text-sm">
+            <thead>
+                <tr class="border-b border-gray-200">
+                    <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">Session</th>
+                    <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Thinking</th>
+                    <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Errors</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in thinking_stats.by_session[:5] %}
+                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                    <td class="py-1.5">
+                        <a href="/sessions/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 text-xs font-medium">
+                            {{ s.custom_title or s.started_at[:10] }}
+                        </a>
+                        <span class="text-gray-400 text-xs ml-1">{{ s.project_name }}</span>
+                    </td>
+                    <td class="py-1.5 text-right text-gray-700">{{ "{:,.0f}K".format(s.thinking_chars / 1000) if s.thinking_chars >= 1000 else "{:,}".format(s.thinking_chars) }}</td>
+                    <td class="py-1.5 text-right text-gray-700">{{ s.tool_error_count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if permission_modes %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Permission Modes</h2>
+        <p class="text-xs text-gray-500 mb-4">Which permission mode you use across sessions.</p>
+        <div style="height: 200px; margin-bottom: 16px;">
+            <canvas id="permissionModeChart"></canvas>
+        </div>
+        <div class="space-y-2">
+            {% set mode_labels = {"acceptEdits": "Accept Edits", "default": "Default", "plan": "Plan", "bypassPermissions": "Bypass"} %}
+            {% set mode_descriptions = {
+                "acceptEdits": "Auto-approves file edits, prompts for other actions",
+                "default": "Prompts for approval on all tool uses",
+                "plan": "Plan mode — research and design before implementing",
+                "bypassPermissions": "All actions auto-approved"
+            } %}
+            {% for m in permission_modes %}
+            <div class="flex items-center justify-between text-sm">
+                <div>
+                    <span class="font-medium text-gray-900">{{ mode_labels.get(m.mode, m.mode) }}</span>
+                    <span class="text-xs text-gray-400 ml-1">{{ mode_descriptions.get(m.mode, "") }}</span>
+                </div>
+                <span class="text-gray-600">{{ m.count }} sessions · {{ "{:.0%}".format(m.pct) }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{# --- Tool Sequences + User Response Time --- #}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    {% if tool_sequences %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Tool Sequences</h2>
+        <p class="text-xs text-gray-500 mb-4">Most common tool-to-tool transitions — the workflow fingerprint.</p>
+        <table class="min-w-full text-sm">
+            <thead>
+                <tr class="border-b border-gray-200">
+                    <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">From</th>
+                    <th class="py-2 text-center text-xs font-medium text-gray-500 uppercase"></th>
+                    <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase">To</th>
+                    <th class="py-2 text-right text-xs font-medium text-gray-500 uppercase">Count</th>
+                    <th class="py-2 text-left text-xs font-medium text-gray-500 uppercase pl-4">Pattern</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for seq in tool_sequences %}
+                <tr class="border-b border-gray-100">
+                    <td class="py-1.5 font-mono text-xs text-gray-800">{{ seq.from_tool }}</td>
+                    <td class="py-1.5 text-center text-gray-400">&rarr;</td>
+                    <td class="py-1.5 font-mono text-xs text-gray-800">{{ seq.to_tool }}</td>
+                    <td class="py-1.5 text-right text-gray-700">{{ "{:,}".format(seq.count) }}</td>
+                    <td class="py-1.5 pl-4">
+                        {% set max_count = tool_sequences[0].count %}
+                        <div class="h-2 bg-blue-100 rounded-full" style="width: 100%;">
+                            <div class="h-2 bg-blue-500 rounded-full" style="width: {{ (seq.count / max_count * 100)|int }}%;"></div>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    {% if response_times.count > 0 %}
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-1">Your Response Time</h2>
+        <p class="text-xs text-gray-500 mb-4">How long you take between Claude's response and your next message (excluding auto tool results).</p>
+        <div class="grid grid-cols-2 gap-4 mb-4">
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+                <div class="text-xs font-medium uppercase text-gray-500 mb-1">Median</div>
+                <div class="text-xl font-bold text-gray-900">
+                    {% if response_times.median_seconds >= 60 %}{{ (response_times.median_seconds // 60)|int }}m {{ (response_times.median_seconds % 60)|int }}s{% else %}{{ response_times.median_seconds|int }}s{% endif %}
+                </div>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-3 text-center">
+                <div class="text-xs font-medium uppercase text-gray-500 mb-1">Mean</div>
+                <div class="text-xl font-bold text-gray-900">
+                    {% if response_times.mean_seconds >= 60 %}{{ (response_times.mean_seconds // 60)|int }}m {{ (response_times.mean_seconds % 60)|int }}s{% else %}{{ response_times.mean_seconds|int }}s{% endif %}
+                </div>
+            </div>
+        </div>
+        <div style="height: 200px;">
+            <canvas id="responseTimeChart"></canvas>
+        </div>
+        <div class="text-xs text-gray-400 mt-2 text-center">{{ response_times.count }} response gaps measured (1s–1h window)</div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+    const firstPromptBuckets = {{ first_prompt.buckets|tojson }};
+    const costPerEdit = {{ cost_per_edit|tojson }};
+    const modelBreakdown = {{ model_breakdown|tojson }};
+    const timeByHour = {{ time_patterns.by_hour|tojson }};
+    const timeByDay = {{ time_patterns.by_day|tojson }};
+    const responseBuckets = {{ response_times.buckets|tojson }};
+    const permissionModes = {{ permission_modes|tojson }};
+    const isSubscriptionUser = {{ subscription_user|tojson }};
+
+    // --- First Prompt Effectiveness ---
+    if (firstPromptBuckets.length > 0 && document.getElementById("firstPromptChart")) {
+        const labels = firstPromptBuckets.map(d => d.label);
+        const costData = firstPromptBuckets.map(d => d.avg_cost);
+        const errorData = firstPromptBuckets.map(d => d.avg_errors);
+
+        const ctx = document.getElementById("firstPromptChart").getContext("2d");
+        new Chart(ctx, {
+            type: "bar",
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: isSubscriptionUser ? "Avg Edits" : "Avg Cost ($)",
+                        data: isSubscriptionUser ? firstPromptBuckets.map(d => d.avg_edits) : costData,
+                        backgroundColor: AIDE_COLORS.primary,
+                        borderRadius: 4,
+                        yAxisID: "y",
+                    },
+                    {
+                        label: "Avg Errors",
+                        data: errorData,
+                        backgroundColor: AIDE_COLORS.danger,
+                        borderRadius: 4,
+                        yAxisID: "y1",
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, position: "left",
+                         ticks: { callback: function(v) { return isSubscriptionUser ? v : formatCost(v); } } },
+                    y1: { beginAtZero: true, position: "right", grid: { display: false },
+                          title: { display: true, text: "Errors" } },
+                    x: { grid: { display: false } },
+                },
+                plugins: {
+                    legend: { display: true, position: "top" },
+                },
+            },
+        });
+    }
+
+    // --- Cost Per Edit by Duration ---
+    if (costPerEdit.length > 0 && document.getElementById("costPerEditChart")) {
+        createBarChart(
+            "costPerEditChart",
+            costPerEdit.map(d => d.label),
+            costPerEdit.map(d => d.avg_cost_per_edit),
+            {
+                scales: {
+                    y: { beginAtZero: true, ticks: { callback: function(v) { return formatCost(v); } } },
+                    x: { grid: { display: false } },
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const item = costPerEdit[ctx.dataIndex];
+                                return formatCost(ctx.parsed.y) + "/edit (" + item.total_edits + " edits, " + item.n + " sessions)";
+                            },
+                        },
+                    },
+                },
+            }
+        );
+    }
+
+    // --- Model Usage (doughnut) ---
+    if (modelBreakdown.length > 0 && document.getElementById("modelChart")) {
+        createPieChart(
+            "modelChart",
+            modelBreakdown.map(d => d.model_short),
+            isSubscriptionUser
+                ? modelBreakdown.map(d => d.msg_count)
+                : modelBreakdown.map(d => d.estimated_cost),
+            {
+                cutout: "55%",
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                if (isSubscriptionUser) return ctx.label + ": " + ctx.parsed.toLocaleString() + " msgs";
+                                return ctx.label + ": " + formatCost(ctx.parsed);
+                            },
+                        },
+                    },
+                },
+            }
+        );
+    }
+
+    // --- Hour of Day ---
+    if (timeByHour.length > 0 && document.getElementById("hourChart")) {
+        // Fill all 24 hours
+        const allHours = Array.from({length: 24}, (_, i) => i);
+        const hourMap = {};
+        timeByHour.forEach(d => { hourMap[d.hour] = d; });
+        const hourLabels = allHours.map(h => h.toString().padStart(2, "0") + ":00");
+        const hourData = allHours.map(h => (hourMap[h] || {}).count || 0);
+
+        createBarChart("hourChart", hourLabels, hourData, {
+            scales: {
+                y: { beginAtZero: true, ticks: { stepSize: 1, precision: 0 } },
+                x: { grid: { display: false }, ticks: { maxTicksLimit: 12 } },
+            },
+        });
+    }
+
+    // --- Day of Week ---
+    if (timeByDay.length > 0 && document.getElementById("dayChart")) {
+        const dayLabels = timeByDay.map(d => d.day_name);
+        const dayData = timeByDay.map(d => d.count);
+
+        createBarChart("dayChart", dayLabels, dayData, {
+            scales: {
+                y: { beginAtZero: true, ticks: { stepSize: 1, precision: 0 } },
+                x: { grid: { display: false } },
+            },
+        });
+    }
+
+    // --- Permission Mode (doughnut) ---
+    if (permissionModes.length > 0 && document.getElementById("permissionModeChart")) {
+        const modeLabels = {"acceptEdits": "Accept Edits", "default": "Default", "plan": "Plan", "bypassPermissions": "Bypass"};
+        createPieChart(
+            "permissionModeChart",
+            permissionModes.map(d => modeLabels[d.mode] || d.mode),
+            permissionModes.map(d => d.count),
+            {
+                cutout: "55%",
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.label + ": " + ctx.parsed + " sessions (" + formatPercent(permissionModes[ctx.dataIndex].pct) + ")";
+                            },
+                        },
+                    },
+                },
+            }
+        );
+    }
+
+    // --- Response Time Distribution ---
+    if (responseBuckets.length > 0 && document.getElementById("responseTimeChart")) {
+        createBarChart(
+            "responseTimeChart",
+            responseBuckets.map(d => d.label),
+            responseBuckets.map(d => d.count),
+            {
+                scales: {
+                    y: { beginAtZero: true, ticks: { precision: 0 } },
+                    x: { grid: { display: false } },
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const item = responseBuckets[ctx.dataIndex];
+                                return ctx.parsed.y + " gaps (" + formatPercent(item.pct) + ")";
+                            },
+                        },
+                    },
+                },
+            }
+        );
+    }
+})();
+</script>
+{% endblock %}

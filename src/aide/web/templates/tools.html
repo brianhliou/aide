@@ -21,6 +21,88 @@
     </div>
 </div>
 
+{# --- Error Breakdown --- #}
+{% if error_breakdown %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Error Breakdown</h2>
+        <div style="height: 260px;">
+            <canvas id="errorBreakdownChart"></canvas>
+        </div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-2">Error Categories</h2>
+        <p class="text-xs text-gray-500 mb-4">Most tool "errors" are normal iteration — test failures, lint fixes, and build retries.</p>
+        <div class="space-y-2">
+            {% set category_colors = {
+                "Test": "bg-blue-100 text-blue-700",
+                "Lint": "bg-emerald-100 text-emerald-700",
+                "Build": "bg-amber-100 text-amber-700",
+                "Git": "bg-purple-100 text-purple-700",
+                "Edit Mismatch": "bg-red-100 text-red-700",
+                "File Access": "bg-orange-100 text-orange-700",
+                "Other": "bg-gray-100 text-gray-700"
+            } %}
+            {% set category_descriptions = {
+                "Test": "Test runner failures — normal edit-test-fix cycle",
+                "Lint": "Linter/formatter errors — auto-fixed on retry",
+                "Build": "Package install or build failures",
+                "Git": "Git command errors",
+                "Edit Mismatch": "Edit tool couldn't find target string",
+                "File Access": "File not found or permission errors",
+                "Other": "Uncategorized bash or tool errors"
+            } %}
+            {% for e in error_breakdown %}
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium {{ category_colors.get(e.category, 'bg-gray-100 text-gray-700') }}">
+                        {{ e.category }}
+                    </span>
+                    <span class="text-xs text-gray-400">{{ category_descriptions.get(e.category, "") }}</span>
+                </div>
+                <span class="text-sm font-semibold text-gray-900">{{ e.count }} <span class="text-gray-400 font-normal">({{ "{:.0%}".format(e.pct) }})</span></span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+{# --- Most Common Bash Commands --- #}
+{% if top_commands %}
+<div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+    <div class="px-6 py-4 border-b border-gray-200">
+        <h2 class="text-lg font-semibold text-gray-900">Most Common Bash Commands</h2>
+    </div>
+    <table class="min-w-full divide-y divide-gray-200">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Command</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Count</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Errors</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Error Rate</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for cmd in top_commands %}
+            <tr class="hover:bg-gray-50">
+                <td class="px-6 py-3 text-sm font-mono text-gray-900 max-w-lg truncate" title="{{ cmd.command }}">
+                    {{ cmd.command[:100] }}{% if cmd.command|length > 100 %}...{% endif %}
+                </td>
+                <td class="px-6 py-3 whitespace-nowrap text-sm text-gray-700 text-right">{{ cmd.count }}</td>
+                <td class="px-6 py-3 whitespace-nowrap text-sm text-right {% if cmd.error_count > 0 %}text-red-600{% else %}text-gray-700{% endif %}">
+                    {{ cmd.error_count if cmd.error_count > 0 else "" }}
+                </td>
+                <td class="px-6 py-3 whitespace-nowrap text-sm text-right {% if cmd.error_rate > 0.1 %}text-red-600{% else %}text-gray-700{% endif %}">
+                    {% if cmd.error_count > 0 %}{{ "{:.0%}".format(cmd.error_rate) }}{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+
 {# --- Most Accessed Files Table --- #}
 <div class="bg-white rounded-lg shadow overflow-hidden">
     <div class="px-6 py-4 border-b border-gray-200">
@@ -70,6 +152,7 @@
     const toolCounts = {{ tool_counts|tojson }};
     const toolWeekly = {{ tool_weekly|tojson }};
     const toolDaily = {{ tool_daily|tojson }};
+    const errorBreakdown = {{ error_breakdown|tojson }};
 
     // --- Tool Usage Bar Chart ---
     const toolLabels = toolCounts.map(d => d.tool_name);
@@ -113,6 +196,43 @@
             },
         },
     });
+
+    // --- Error Breakdown (doughnut chart) ---
+    if (errorBreakdown.length > 0 && document.getElementById("errorBreakdownChart")) {
+        const CATEGORY_COLORS = {
+            "Test": "rgb(59, 130, 246)",
+            "Lint": "rgb(16, 185, 129)",
+            "Build": "rgb(245, 158, 11)",
+            "Git": "rgb(139, 92, 246)",
+            "Edit Mismatch": "rgb(239, 68, 68)",
+            "File Access": "rgb(249, 115, 22)",
+            "Other": "rgb(156, 163, 175)",
+        };
+        const ebLabels = errorBreakdown.map(d => d.category);
+        const ebData = errorBreakdown.map(d => d.count);
+        const ebColors = ebLabels.map(l => CATEGORY_COLORS[l] || "rgb(156, 163, 175)");
+
+        createPieChart("errorBreakdownChart", ebLabels, ebData, {
+            cutout: "55%",
+            plugins: {
+                tooltip: {
+                    callbacks: {
+                        label: function(ctx) {
+                            const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                            const pct = ((ctx.parsed / total) * 100).toFixed(0);
+                            return ctx.label + ": " + ctx.parsed + " (" + pct + "%)";
+                        },
+                    },
+                },
+            },
+        });
+        // Override colors since createPieChart uses PROJECT_COLORS by default
+        const ebChart = Chart.getChart("errorBreakdownChart");
+        if (ebChart) {
+            ebChart.data.datasets[0].backgroundColor = ebColors;
+            ebChart.update();
+        }
+    }
 
     // --- Tool Usage Over Time (Stacked Area, daily) ---
     const topTools = ["Bash", "Edit", "Read", "Write", "Grep", "Glob"];

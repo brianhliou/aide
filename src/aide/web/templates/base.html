@@ -30,6 +30,10 @@
                        class="{% if request.path == '/tools' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
                         Tools
                     </a>
+                    <a href="/insights"
+                       class="{% if request.path == '/insights' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Insights
+                    </a>
                 </div>
                 <form action="/settings/subscription" method="post" class="flex items-center gap-2">
                     <span class="text-xs text-gray-400">API</span>

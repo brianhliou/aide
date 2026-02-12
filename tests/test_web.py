@@ -7,7 +7,7 @@ import pytest
 
 from aide.config import AideConfig
 from aide.db import ingest_sessions, init_db, rebuild_daily_stats
-from aide.models import ParsedMessage, ParsedSession, ToolCall
+from aide.models import ParsedMessage, ParsedSession, ToolCall, WorkBlock
 from aide.web import queries
 from aide.web.app import create_app
 
@@ -45,13 +45,14 @@ def _make_test_session(
             ToolCall(tool_name="Edit", file_path="src/main.py", timestamp=now),
         ],
     )
+    ended = now + timedelta(minutes=45)
     return ParsedSession(
         session_id=session_id,
         project_path=f"-Users-test-{project_name}",
         project_name=project_name,
         source_file=f"/fake/{session_id}.jsonl",
         started_at=now,
-        ended_at=now + timedelta(minutes=45),
+        ended_at=ended,
         messages=[msg],
         duration_seconds=2700,
         total_input_tokens=input_tokens,
@@ -69,6 +70,17 @@ def _make_test_session(
         bash_count=0,
         compaction_count=0,
         peak_context_tokens=0,
+        active_duration_seconds=2700,
+        work_blocks=[
+            WorkBlock(
+                session_id=session_id,
+                block_index=0,
+                started_at=now,
+                ended_at=ended,
+                duration_seconds=2700,
+                message_count=1,
+            ),
+        ],
     )
 
 
@@ -217,7 +229,7 @@ class TestRoutes:
     def test_overview_contains_chart_headings(self, client):
         resp = client.get("/")
         assert b"Cost Over Time" in resp.data
-        assert b"Sessions Per Week" in resp.data
+        assert b"Work Blocks Per Week" in resp.data
         assert b"Cost By Project" in resp.data
         assert b"Token Breakdown" in resp.data
 
@@ -407,6 +419,7 @@ class TestQueryOverviewSummary:
         result = queries.get_overview_summary(seeded_db)
         last_30d = result["last_30d"]
         assert "sessions" in last_30d
+        assert "work_blocks" in last_30d
         assert "cost" in last_30d
         assert "projects" in last_30d
 
@@ -583,6 +596,8 @@ class TestQuerySessionsList:
         assert "project_name" in item
         assert "started_at" in item
         assert "duration_seconds" in item
+        assert "active_duration_seconds" in item
+        assert "work_block_count" in item
         assert "message_count" in item
         assert "tool_call_count" in item
         assert "estimated_cost_usd" in item
@@ -653,7 +668,7 @@ class TestQuerySessionDetail:
 
 
 class TestQueryEffectivenessSummary:
-    """Tests for get_effectiveness_summary — 7 exact metrics."""
+    """Tests for get_effectiveness_summary — metrics with error categorization."""
 
     def test_returns_dict_with_expected_keys(self, seeded_db):
         result = queries.get_effectiveness_summary(seeded_db)
@@ -664,6 +679,7 @@ class TestQueryEffectivenessSummary:
         assert "output_ratio" in result
         assert "tokens_per_user_msg" in result
         assert "turns_per_user_prompt" in result
+        assert "iteration_error_pct" in result
         assert "session_count" in result
 
     def test_session_count(self, seeded_db):
@@ -849,3 +865,725 @@ class TestQueryTopFiles:
     def test_empty_db_returns_empty_list(self, empty_db):
         result = queries.get_top_files(empty_db)
         assert result == []
+
+
+# ===========================================================================
+# Error Categorization Tests
+# ===========================================================================
+
+
+def _make_session_with_errors(
+    session_id="err-sess-1",
+    project_name="test-project",
+):
+    """Build a session with various error types for testing categorization."""
+    now = datetime.now(timezone.utc)
+    msg = ParsedMessage(
+        uuid=f"msg-{session_id}",
+        parent_uuid=None,
+        session_id=session_id,
+        timestamp=now,
+        role="assistant",
+        type="assistant",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        content_length=500,
+        tool_calls=[
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="uv run pytest tests/", is_error=True,
+            ),
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="uv run pytest tests/test_parser.py", is_error=True,
+            ),
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="uv run ruff check src/", is_error=True,
+            ),
+            ToolCall(
+                tool_name="Edit", file_path="src/main.py", timestamp=now,
+                is_error=True,
+            ),
+            ToolCall(
+                tool_name="Read", file_path="nonexistent.py", timestamp=now,
+                is_error=True,
+            ),
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="pip install foo", is_error=True,
+            ),
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="git push origin main", is_error=True,
+            ),
+            ToolCall(
+                tool_name="Bash", file_path=None, timestamp=now,
+                command="curl https://example.com", is_error=True,
+            ),
+            # Non-error calls
+            ToolCall(tool_name="Read", file_path="src/main.py", timestamp=now),
+            ToolCall(tool_name="Edit", file_path="src/main.py", timestamp=now),
+        ],
+    )
+    ended = now + timedelta(minutes=30)
+    return ParsedSession(
+        session_id=session_id,
+        project_path=f"-Users-test-{project_name}",
+        project_name=project_name,
+        source_file=f"/fake/{session_id}.jsonl",
+        started_at=now,
+        ended_at=ended,
+        messages=[msg],
+        duration_seconds=1800,
+        total_input_tokens=1000,
+        total_output_tokens=500,
+        total_cache_read_tokens=0,
+        total_cache_creation_tokens=0,
+        estimated_cost_usd=2.0,
+        message_count=1,
+        user_message_count=1,
+        assistant_message_count=1,
+        tool_call_count=10,
+        file_read_count=1,
+        file_write_count=0,
+        file_edit_count=1,
+        bash_count=5,
+        compaction_count=0,
+        peak_context_tokens=0,
+        tool_error_count=8,
+        active_duration_seconds=1800,
+        work_blocks=[
+            WorkBlock(
+                session_id=session_id,
+                block_index=0,
+                started_at=now,
+                ended_at=ended,
+                duration_seconds=1800,
+                message_count=1,
+            ),
+        ],
+    )
+
+
+@pytest.fixture
+def error_db(tmp_path):
+    """A temporary database with error-producing sessions."""
+    db_path = tmp_path / "test-errors.db"
+    init_db(db_path)
+    s = _make_session_with_errors()
+    ingest_sessions(db_path, [s])
+    rebuild_daily_stats(db_path)
+    return db_path
+
+
+class TestCategorizeError:
+    """Tests for _categorize_error helper."""
+
+    def test_edit_is_edit_mismatch(self):
+        assert queries._categorize_error("Edit", None) == "Edit Mismatch"
+
+    def test_read_is_file_access(self):
+        assert queries._categorize_error("Read", None) == "File Access"
+
+    def test_write_is_file_access(self):
+        assert queries._categorize_error("Write", None) == "File Access"
+
+    def test_bash_pytest_is_test(self):
+        assert queries._categorize_error("Bash", "uv run pytest tests/") == "Test"
+
+    def test_bash_ruff_is_lint(self):
+        assert queries._categorize_error("Bash", "ruff check src/") == "Lint"
+
+    def test_bash_mypy_is_lint(self):
+        assert queries._categorize_error("Bash", "mypy src/") == "Lint"
+
+    def test_bash_pip_is_build(self):
+        assert queries._categorize_error("Bash", "pip install requests") == "Build"
+
+    def test_bash_git_is_git(self):
+        assert queries._categorize_error("Bash", "git push origin main") == "Git"
+
+    def test_bash_unknown_is_other(self):
+        assert queries._categorize_error("Bash", "curl https://example.com") == "Other"
+
+    def test_non_bash_no_command_is_other(self):
+        assert queries._categorize_error("Task", None) == "Other"
+
+
+class TestErrorBreakdown:
+    """Tests for get_error_breakdown."""
+
+    def test_returns_list(self, error_db):
+        result = queries.get_error_breakdown(error_db)
+        assert isinstance(result, list)
+
+    def test_has_expected_categories(self, error_db):
+        result = queries.get_error_breakdown(error_db)
+        cats = {r["category"] for r in result}
+        assert "Test" in cats
+        assert "Lint" in cats
+        assert "Edit Mismatch" in cats
+
+    def test_test_count_is_correct(self, error_db):
+        result = queries.get_error_breakdown(error_db)
+        by_cat = {r["category"]: r["count"] for r in result}
+        assert by_cat["Test"] == 2  # two pytest commands
+
+    def test_sorted_by_count_desc(self, error_db):
+        result = queries.get_error_breakdown(error_db)
+        counts = [r["count"] for r in result]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_pct_sums_to_one(self, error_db):
+        result = queries.get_error_breakdown(error_db)
+        total_pct = sum(r["pct"] for r in result)
+        assert abs(total_pct - 1.0) < 1e-6
+
+    def test_empty_db_returns_empty(self, empty_db):
+        result = queries.get_error_breakdown(empty_db)
+        assert result == []
+
+
+class TestSessionDetailErrorBreakdown:
+    """Tests for error_breakdown in get_session_detail."""
+
+    def test_session_detail_has_error_breakdown(self, error_db):
+        result = queries.get_session_detail(error_db, "err-sess-1")
+        assert "error_breakdown" in result
+        assert len(result["error_breakdown"]) > 0
+
+    def test_error_breakdown_has_category_and_count(self, error_db):
+        result = queries.get_session_detail(error_db, "err-sess-1")
+        for item in result["error_breakdown"]:
+            assert "category" in item
+            assert "count" in item
+
+    def test_no_errors_returns_empty_breakdown(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert result["error_breakdown"] == []
+
+
+class TestEffectivenessIterationPct:
+    """Tests for iteration_error_pct in get_effectiveness_summary."""
+
+    def test_iteration_pct_present(self, error_db):
+        result = queries.get_effectiveness_summary(error_db)
+        assert "iteration_error_pct" in result
+
+    def test_iteration_pct_correct(self, error_db):
+        result = queries.get_effectiveness_summary(error_db)
+        # 8 errors: 2 test + 1 lint + 1 build = 4 iteration, 4 non-iteration
+        # iteration_error_pct = 4/8 = 0.5
+        # Actually: pytest(2) + ruff(1) + pip(1) = 4 iteration errors
+        assert abs(result["iteration_error_pct"] - 0.5) < 1e-6
+
+    def test_no_errors_returns_zero(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        assert result["iteration_error_pct"] == 0.0
+
+
+# ===========================================================================
+# Insights Query Tests
+# ===========================================================================
+
+
+class TestFirstPromptAnalysis:
+    """Tests for get_first_prompt_analysis."""
+
+    def test_returns_dict_with_expected_keys(self, seeded_db):
+        result = queries.get_first_prompt_analysis(seeded_db)
+        assert "buckets" in result
+        assert "scatter" in result
+
+    def test_scatter_returns_list(self, seeded_db):
+        result = queries.get_first_prompt_analysis(seeded_db)
+        assert isinstance(result["scatter"], list)
+        # Test sessions only have assistant messages, so scatter may be empty
+        if result["scatter"]:
+            item = result["scatter"][0]
+            assert "prompt_len" in item
+            assert "cost" in item
+            assert "errors" in item
+
+    def test_empty_db_returns_empty(self, empty_db):
+        result = queries.get_first_prompt_analysis(empty_db)
+        assert result["buckets"] == []
+        assert result["scatter"] == []
+
+
+class TestCostConcentration:
+    """Tests for get_cost_concentration."""
+
+    def test_returns_dict_with_expected_keys(self, seeded_db):
+        result = queries.get_cost_concentration(seeded_db)
+        assert "sessions" in result
+        assert "top3_pct" in result
+        assert "median" in result
+        assert "p90" in result
+
+    def test_sessions_sorted_by_cost_desc(self, seeded_db):
+        result = queries.get_cost_concentration(seeded_db)
+        costs = [s["cost"] for s in result["sessions"]]
+        assert costs == sorted(costs, reverse=True)
+
+    def test_cumulative_pct_ends_at_one(self, seeded_db):
+        result = queries.get_cost_concentration(seeded_db)
+        if result["sessions"]:
+            last_pct = result["sessions"][-1]["cumulative_pct"]
+            assert abs(last_pct - 1.0) < 1e-6
+
+    def test_empty_db_returns_zeros(self, empty_db):
+        result = queries.get_cost_concentration(empty_db)
+        assert result["sessions"] == []
+        assert result["top3_pct"] == 0
+
+
+class TestCostPerEditByDuration:
+    """Tests for get_cost_per_edit_by_duration."""
+
+    def test_returns_list(self, seeded_db):
+        result = queries.get_cost_per_edit_by_duration(seeded_db)
+        assert isinstance(result, list)
+
+    def test_items_have_expected_keys(self, seeded_db):
+        result = queries.get_cost_per_edit_by_duration(seeded_db)
+        if result:
+            item = result[0]
+            assert "label" in item
+            assert "n" in item
+            assert "avg_cost_per_edit" in item
+
+    def test_empty_db_returns_empty(self, empty_db):
+        result = queries.get_cost_per_edit_by_duration(empty_db)
+        assert result == []
+
+
+class TestModelBreakdown:
+    """Tests for get_model_breakdown."""
+
+    def test_returns_list(self, seeded_db):
+        result = queries.get_model_breakdown(seeded_db)
+        assert isinstance(result, list)
+
+    def test_empty_db_returns_empty(self, empty_db):
+        result = queries.get_model_breakdown(empty_db)
+        assert result == []
+
+
+class TestToolSequences:
+    """Tests for get_tool_sequences."""
+
+    def test_returns_list(self, seeded_db):
+        result = queries.get_tool_sequences(seeded_db)
+        assert isinstance(result, list)
+
+    def test_items_have_expected_keys(self, seeded_db):
+        result = queries.get_tool_sequences(seeded_db)
+        if result:
+            item = result[0]
+            assert "from_tool" in item
+            assert "to_tool" in item
+            assert "count" in item
+
+    def test_limit_parameter(self, seeded_db):
+        result = queries.get_tool_sequences(seeded_db, limit=1)
+        assert len(result) <= 1
+
+    def test_empty_db_returns_empty(self, empty_db):
+        result = queries.get_tool_sequences(empty_db)
+        assert result == []
+
+
+class TestTimePatterns:
+    """Tests for get_time_patterns."""
+
+    def test_returns_dict_with_keys(self, seeded_db):
+        result = queries.get_time_patterns(seeded_db)
+        assert "by_hour" in result
+        assert "by_day" in result
+
+    def test_by_hour_items(self, seeded_db):
+        result = queries.get_time_patterns(seeded_db)
+        if result["by_hour"]:
+            item = result["by_hour"][0]
+            assert "hour" in item
+            assert "count" in item
+
+    def test_by_day_items(self, seeded_db):
+        result = queries.get_time_patterns(seeded_db)
+        if result["by_day"]:
+            item = result["by_day"][0]
+            assert "day_name" in item
+            assert "count" in item
+
+    def test_empty_db_returns_empty_lists(self, empty_db):
+        result = queries.get_time_patterns(empty_db)
+        assert result["by_hour"] == []
+        assert result["by_day"] == []
+
+
+class TestUserResponseTimes:
+    """Tests for get_user_response_times."""
+
+    def test_returns_dict_with_keys(self, seeded_db):
+        result = queries.get_user_response_times(seeded_db)
+        assert "median_seconds" in result
+        assert "mean_seconds" in result
+        assert "count" in result
+        assert "buckets" in result
+
+    def test_empty_db_returns_zeros(self, empty_db):
+        result = queries.get_user_response_times(empty_db)
+        assert result["count"] == 0
+        assert result["buckets"] == []
+
+
+class TestSessionDetailInsights:
+    """Tests for file_focus_ratio and first_prompt_len in session detail."""
+
+    def test_has_file_focus_ratio(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert "file_focus_ratio" in result
+        assert "unique_files" in result
+
+    def test_has_first_prompt_len(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert "first_prompt_len" in result
+
+
+class TestEffectivenessCostPerEdit:
+    """Test cost_per_edit in effectiveness summary."""
+
+    def test_has_cost_per_edit(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        assert "cost_per_edit" in result
+
+    def test_cost_per_edit_value(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # 2 sessions: total cost = $10.75, total edits = 2 (1 edit each)
+        expected = 10.75 / 2
+        assert abs(result["cost_per_edit"] - expected) < 1e-6
+
+    def test_empty_db_returns_zero(self, empty_db):
+        result = queries.get_effectiveness_summary(empty_db)
+        assert result["cost_per_edit"] == 0.0
+
+
+# ===========================================================================
+# Insights Route Tests
+# ===========================================================================
+
+
+class TestInsightsRoute:
+    """Tests for the /insights route."""
+
+    def test_insights_returns_200(self, client):
+        resp = client.get("/insights")
+        assert resp.status_code == 200
+
+    def test_insights_contains_heading(self, client):
+        resp = client.get("/insights")
+        assert b"Insights" in resp.data
+
+    def test_insights_contains_tool_sequences(self, client):
+        resp = client.get("/insights")
+        assert b"Tool Sequences" in resp.data
+
+    def test_insights_empty_db_returns_200(self, empty_client):
+        resp = empty_client.get("/insights")
+        assert resp.status_code == 200
+
+
+class TestInsightsNavigation:
+    """Test that Insights nav link is present."""
+
+    @pytest.mark.parametrize(
+        "path", ["/", "/projects", "/sessions", "/tools", "/insights"],
+    )
+    def test_nav_insights_link(self, client, path):
+        resp = client.get(path)
+        assert b'href="/insights"' in resp.data
+
+
+class TestToolsPageErrors:
+    """Test that tools page renders error breakdown."""
+
+    def test_tools_page_with_errors_returns_200(self, error_db):
+        config = _make_config(error_db)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/tools")
+            assert resp.status_code == 200
+
+    def test_tools_page_shows_error_breakdown_heading(self, error_db):
+        config = _make_config(error_db)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/tools")
+            assert b"Error Breakdown" in resp.data
+
+    def test_tools_page_shows_error_categories(self, error_db):
+        config = _make_config(error_db)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/tools")
+            assert b"Test" in resp.data
+            assert b"Edit Mismatch" in resp.data
+
+
+# ===========================================================================
+# Thinking Stats
+# ===========================================================================
+
+
+@pytest.fixture
+def thinking_db(tmp_path):
+    """Database with sessions that have thinking metrics."""
+    db_path = tmp_path / "thinking.db"
+    init_db(db_path)
+    s1 = _make_test_session(session_id="think-1", project_name="alpha", cost=5.0)
+    s1.total_thinking_chars = 50000
+    s1.thinking_message_count = 10
+    s2 = _make_test_session(session_id="think-2", project_name="beta", cost=3.0, days_ago=1)
+    s2.total_thinking_chars = 0
+    s2.thinking_message_count = 0
+    ingest_sessions(db_path, [s1, s2])
+    return db_path
+
+
+class TestThinkingStats:
+    def test_returns_dict(self, thinking_db):
+        result = queries.get_thinking_stats(thinking_db)
+        assert isinstance(result, dict)
+        assert "sessions_with_thinking" in result
+        assert "total_sessions" in result
+        assert "avg_thinking_chars" in result
+        assert "by_session" in result
+
+    def test_counts_sessions_with_thinking(self, thinking_db):
+        result = queries.get_thinking_stats(thinking_db)
+        assert result["sessions_with_thinking"] == 1
+        assert result["total_sessions"] == 2
+
+    def test_avg_thinking_chars(self, thinking_db):
+        result = queries.get_thinking_stats(thinking_db)
+        assert result["avg_thinking_chars"] == 50000
+
+    def test_by_session_details(self, thinking_db):
+        result = queries.get_thinking_stats(thinking_db)
+        assert len(result["by_session"]) == 1
+        s = result["by_session"][0]
+        assert s["session_id"] == "think-1"
+        assert s["thinking_chars"] == 50000
+        assert s["thinking_messages"] == 10
+
+    def test_empty_db(self, empty_db):
+        result = queries.get_thinking_stats(empty_db)
+        assert result["sessions_with_thinking"] == 0
+        assert result["avg_thinking_chars"] == 0
+        assert result["by_session"] == []
+
+
+# ===========================================================================
+# Permission Mode Breakdown
+# ===========================================================================
+
+
+@pytest.fixture
+def permission_db(tmp_path):
+    """Database with sessions that have permission modes."""
+    db_path = tmp_path / "permission.db"
+    init_db(db_path)
+    s1 = _make_test_session(session_id="perm-1", project_name="alpha")
+    s1.permission_mode = "acceptEdits"
+    s2 = _make_test_session(session_id="perm-2", project_name="beta", days_ago=1)
+    s2.permission_mode = "acceptEdits"
+    s3 = _make_test_session(session_id="perm-3", project_name="gamma", days_ago=2)
+    s3.permission_mode = "default"
+    ingest_sessions(db_path, [s1, s2, s3])
+    return db_path
+
+
+class TestPermissionModeBreakdown:
+    def test_returns_list(self, permission_db):
+        result = queries.get_permission_mode_breakdown(permission_db)
+        assert isinstance(result, list)
+
+    def test_modes_counted(self, permission_db):
+        result = queries.get_permission_mode_breakdown(permission_db)
+        modes = {r["mode"]: r for r in result}
+        assert modes["acceptEdits"]["count"] == 2
+        assert modes["default"]["count"] == 1
+
+    def test_pct_sums_to_one(self, permission_db):
+        result = queries.get_permission_mode_breakdown(permission_db)
+        total = sum(r["pct"] for r in result)
+        assert abs(total - 1.0) < 0.01
+
+    def test_sorted_by_count_desc(self, permission_db):
+        result = queries.get_permission_mode_breakdown(permission_db)
+        counts = [r["count"] for r in result]
+        assert counts == sorted(counts, reverse=True)
+
+    def test_empty_db(self, empty_db):
+        result = queries.get_permission_mode_breakdown(empty_db)
+        assert result == []
+
+
+# ===========================================================================
+# Session Detail — Thinking + Permission
+# ===========================================================================
+
+
+class TestSessionDetailThinkingPermission:
+    def test_thinking_ratio_in_detail(self, thinking_db):
+        result = queries.get_session_detail(thinking_db, "think-1")
+        assert "thinking_ratio" in result
+        # 10 thinking messages / 1 assistant message
+        assert result["thinking_ratio"] == 10.0
+
+    def test_permission_mode_in_detail(self, permission_db):
+        result = queries.get_session_detail(permission_db, "perm-1")
+        assert result["permission_mode"] == "acceptEdits"
+
+    def test_no_permission_mode(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert result["permission_mode"] is None
+
+
+# ===========================================================================
+# Insights Route — Thinking + Permission
+# ===========================================================================
+
+
+class TestInsightsThinkingPermission:
+    def test_insights_with_thinking_renders(self, tmp_path):
+        """Insights page renders with thinking data."""
+        db_path = tmp_path / "insight-think.db"
+        init_db(db_path)
+        s = _make_test_session(session_id="it-1")
+        s.total_thinking_chars = 80000
+        s.thinking_message_count = 15
+        s.permission_mode = "acceptEdits"
+        ingest_sessions(db_path, [s])
+        rebuild_daily_stats(db_path)
+
+        config = _make_config(db_path)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/insights")
+            assert resp.status_code == 200
+            assert b"Thinking Blocks" in resp.data
+            assert b"Permission Modes" in resp.data
+
+
+# ===========================================================================
+# Work Blocks Tests
+# ===========================================================================
+
+
+class TestQueryWeeklyWorkBlockCounts:
+    """Tests for get_weekly_work_block_counts."""
+
+    def test_returns_list(self, seeded_db):
+        result = queries.get_weekly_work_block_counts(seeded_db)
+        assert isinstance(result, list)
+
+    def test_items_have_expected_keys(self, seeded_db):
+        result = queries.get_weekly_work_block_counts(seeded_db)
+        if result:
+            item = result[0]
+            assert "week_start" in item
+            assert "work_block_count" in item
+
+    def test_empty_db_returns_empty_list(self, empty_db):
+        result = queries.get_weekly_work_block_counts(empty_db)
+        assert result == []
+
+    def test_counts_work_blocks(self, seeded_db):
+        result = queries.get_weekly_work_block_counts(seeded_db)
+        total = sum(r["work_block_count"] for r in result)
+        # 2 sessions, each with 1 work block
+        assert total == 2
+
+
+class TestSessionsListWorkBlocks:
+    """Tests for work block fields in get_sessions_list."""
+
+    def test_has_active_duration(self, seeded_db):
+        result = queries.get_sessions_list(seeded_db)
+        for item in result:
+            assert "active_duration_seconds" in item
+
+    def test_has_work_block_count(self, seeded_db):
+        result = queries.get_sessions_list(seeded_db)
+        for item in result:
+            assert item["work_block_count"] == 1
+
+
+class TestSessionDetailWorkBlocks:
+    """Tests for work blocks in get_session_detail."""
+
+    def test_has_work_blocks(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert "work_blocks" in result
+        assert isinstance(result["work_blocks"], list)
+
+    def test_work_block_fields(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        if result["work_blocks"]:
+            wb = result["work_blocks"][0]
+            assert "block_index" in wb
+            assert "started_at" in wb
+            assert "ended_at" in wb
+            assert "duration_seconds" in wb
+            assert "message_count" in wb
+
+    def test_has_active_duration(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+        assert result["active_duration_seconds"] == 2700
+
+
+class TestOverviewWorkBlocks:
+    """Tests for work block counts in overview summary."""
+
+    def test_summary_has_work_blocks(self, seeded_db):
+        result = queries.get_overview_summary(seeded_db)
+        assert "work_blocks" in result["last_30d"]
+        assert "work_blocks" in result["this_week"]
+        assert "work_blocks" in result["today"]
+
+    def test_work_block_counts(self, seeded_db):
+        result = queries.get_overview_summary(seeded_db)
+        assert result["last_30d"]["work_blocks"] == 2
+
+
+class TestOverviewRouteWorkBlocks:
+    """Test that overview page renders work block content."""
+
+    def test_overview_shows_work_blocks(self, client):
+        resp = client.get("/")
+        assert b"work blocks" in resp.data
+
+    def test_overview_shows_sessions_secondary(self, client):
+        resp = client.get("/")
+        assert b"sessions" in resp.data
+
+
+class TestInsightsWorkBlocks:
+    """Test that insights page uses work blocks for time patterns."""
+
+    def test_insights_shows_work_blocks_by_hour(self, client):
+        resp = client.get("/insights")
+        assert b"Work Blocks by Hour" in resp.data
+
+    def test_insights_shows_work_blocks_by_day(self, client):
+        resp = client.get("/insights")
+        assert b"Work Blocks by Day" in resp.data
