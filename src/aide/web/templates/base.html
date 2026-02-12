@@ -31,6 +31,15 @@
                         Tools
                     </a>
                 </div>
+                <form action="/settings/subscription" method="post" class="flex items-center gap-2">
+                    <span class="text-xs text-gray-400">API</span>
+                    <button type="submit"
+                            class="relative inline-flex h-5 w-9 items-center rounded-full transition-colors {{ 'bg-blue-500' if subscription_user else 'bg-gray-300' }}"
+                            title="Toggle subscription / API mode">
+                        <span class="inline-block h-3.5 w-3.5 rounded-full bg-white shadow transform transition-transform {{ 'translate-x-4' if subscription_user else 'translate-x-0.5' }}"></span>
+                    </button>
+                    <span class="text-xs text-gray-400">Sub</span>
+                </form>
             </div>
         </div>
     </nav>

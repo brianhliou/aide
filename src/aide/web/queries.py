@@ -287,7 +287,10 @@ def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[di
     try:
         query = """SELECT
                 session_id, project_name, started_at, duration_seconds,
-                message_count, tool_call_count, estimated_cost_usd
+                message_count, user_message_count, tool_call_count,
+                estimated_cost_usd, total_input_tokens, total_output_tokens,
+                total_cache_read_tokens, total_cache_creation_tokens,
+                file_edit_count, file_write_count, compaction_count
             FROM sessions"""
         params: tuple = ()
 
@@ -306,8 +309,15 @@ def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[di
                 "started_at": r["started_at"],
                 "duration_seconds": r["duration_seconds"],
                 "message_count": r["message_count"],
+                "user_message_count": r["user_message_count"],
                 "tool_call_count": r["tool_call_count"],
                 "estimated_cost_usd": r["estimated_cost_usd"],
+                "total_tokens": (
+                    (r["total_input_tokens"] or 0) + (r["total_output_tokens"] or 0)
+                    + (r["total_cache_read_tokens"] or 0) + (r["total_cache_creation_tokens"] or 0)
+                ),
+                "edits": (r["file_edit_count"] or 0) + (r["file_write_count"] or 0),
+                "had_compaction": (r["compaction_count"] or 0) > 0,
             }
             for r in rows
         ]
@@ -432,6 +442,143 @@ def get_tool_weekly(db_path: Path, weeks: int = 12) -> list[dict]:
             {"week_start": r["week_start"], "tool_name": r["tool_name"], "count": r["count"]}
             for r in rows
         ]
+    finally:
+        con.close()
+
+
+def get_tool_daily(db_path: Path, days: int = 90) -> list[dict]:
+    """Tool usage grouped by day and tool name.
+
+    Returns:
+        [{date, tool_name, count}, ...]
+    """
+    con = get_connection(db_path)
+    try:
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        rows = con.execute(
+            """SELECT
+                date(timestamp) AS date,
+                tool_name,
+                COUNT(*) AS count
+            FROM tool_calls
+            WHERE date(timestamp) >= ?
+            GROUP BY date, tool_name
+            ORDER BY date, count DESC""",
+            (cutoff,),
+        ).fetchall()
+
+        return [
+            {"date": r["date"], "tool_name": r["tool_name"], "count": r["count"]}
+            for r in rows
+        ]
+    finally:
+        con.close()
+
+
+def get_effectiveness_summary(db_path: Path) -> dict:
+    """Effectiveness metrics aggregated across all sessions.
+
+    Returns all 7 metrics derived from exact token/tool counts:
+        {cache_hit_rate, edit_ratio, compaction_rate, read_to_edit_ratio,
+         output_ratio, tokens_per_user_msg, turns_per_user_prompt, session_count}
+    """
+    con = get_connection(db_path)
+    try:
+        row = con.execute(
+            """SELECT
+                COUNT(*) AS session_count,
+                COALESCE(SUM(total_cache_read_tokens), 0) AS total_cache_read,
+                COALESCE(SUM(total_input_tokens), 0) AS total_input,
+                COALESCE(SUM(total_cache_creation_tokens), 0) AS total_cache_creation,
+                COALESCE(SUM(total_output_tokens), 0) AS total_output,
+                COALESCE(SUM(tool_call_count), 0) AS total_tools,
+                COALESCE(SUM(file_edit_count), 0) AS total_edits,
+                COALESCE(SUM(file_write_count), 0) AS total_writes,
+                COALESCE(SUM(file_read_count), 0) AS total_reads,
+                COALESCE(SUM(user_message_count), 0) AS total_user_msgs,
+                COALESCE(SUM(assistant_message_count), 0) AS total_asst_msgs,
+                COALESCE(SUM(CASE WHEN compaction_count > 0 THEN 1 ELSE 0 END), 0)
+                    AS sessions_with_compaction
+            FROM sessions"""
+        ).fetchone()
+
+        n = row["session_count"]
+        cache_read = row["total_cache_read"]
+        input_denom = row["total_input"] + cache_read + row["total_cache_creation"]
+        edit_write = row["total_edits"] + row["total_writes"]
+        io_total = row["total_input"] + row["total_output"]
+        all_tokens = input_denom + row["total_output"]
+        user_msgs = row["total_user_msgs"]
+
+        return {
+            "cache_hit_rate": cache_read / input_denom if input_denom > 0 else 0.0,
+            "edit_ratio": edit_write / row["total_tools"] if row["total_tools"] > 0 else 0.0,
+            "compaction_rate": row["sessions_with_compaction"] / n if n > 0 else 0.0,
+            "read_to_edit_ratio": row["total_reads"] / max(edit_write, 1),
+            "output_ratio": (
+                row["total_output"] / io_total if io_total > 0 else 0.0
+            ),
+            "tokens_per_user_msg": all_tokens // user_msgs if user_msgs > 0 else 0,
+            "turns_per_user_prompt": (
+                row["total_asst_msgs"] / user_msgs if user_msgs > 0 else 0.0
+            ),
+            "session_count": n,
+        }
+    finally:
+        con.close()
+
+
+def get_effectiveness_trends(db_path: Path, days: int = 90) -> list[dict]:
+    """Per-session effectiveness metrics for trend charts.
+
+    Returns:
+        [{date, session_id, cache_hit_rate, edit_ratio, had_compaction}, ...]
+        Sorted by started_at ascending.
+    """
+    con = get_connection(db_path)
+    try:
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        rows = con.execute(
+            """SELECT
+                session_id,
+                started_at,
+                date(started_at) AS date,
+                total_input_tokens,
+                total_cache_read_tokens,
+                total_cache_creation_tokens,
+                tool_call_count,
+                file_edit_count,
+                file_write_count,
+                compaction_count
+            FROM sessions
+            WHERE date(started_at) >= ?
+            ORDER BY started_at""",
+            (cutoff,),
+        ).fetchall()
+
+        result = []
+        for r in rows:
+            denom = (
+                (r["total_input_tokens"] or 0)
+                + (r["total_cache_read_tokens"] or 0)
+                + (r["total_cache_creation_tokens"] or 0)
+            )
+            cache_hit_rate = (
+                (r["total_cache_read_tokens"] or 0) / denom if denom > 0 else 0.0
+            )
+            tools = r["tool_call_count"] or 0
+            edits_writes = (r["file_edit_count"] or 0) + (r["file_write_count"] or 0)
+            edit_ratio = edits_writes / tools if tools > 0 else 0.0
+            result.append({
+                "started_at": r["started_at"],
+                "date": r["date"],
+                "session_id": r["session_id"],
+                "cache_hit_rate": round(cache_hit_rate, 4),
+                "edit_ratio": round(edit_ratio, 4),
+                "had_compaction": (r["compaction_count"] or 0) > 0,
+            })
+
+        return result
     finally:
         con.close()
 

@@ -165,6 +165,18 @@ def parse_jsonl_file(file_path: Path) -> list[ParsedSession]:
         file_edit_count = sum(1 for tc in all_tool_calls if tc.tool_name == "Edit")
         bash_count = sum(1 for tc in all_tool_calls if tc.tool_name == "Bash")
 
+        # Compute compaction data from assistant message context sizes
+        context_sizes = [
+            m.input_tokens + m.cache_read_tokens + m.cache_creation_tokens
+            for m in messages
+            if m.role == "assistant"
+        ]
+        peak_context = max(context_sizes) if context_sizes else 0
+        compaction_count = 0
+        for i in range(1, len(context_sizes)):
+            if context_sizes[i - 1] > 100_000 and context_sizes[i] < context_sizes[i - 1] * 0.5:
+                compaction_count += 1
+
         cost = estimate_cost(
             total_input, total_output, total_cache_read, total_cache_creation,
         )
@@ -191,6 +203,8 @@ def parse_jsonl_file(file_path: Path) -> list[ParsedSession]:
             file_write_count=file_write_count,
             file_edit_count=file_edit_count,
             bash_count=bash_count,
+            compaction_count=compaction_count,
+            peak_context_tokens=peak_context,
         )
         sessions.append(session)
 

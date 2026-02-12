@@ -60,13 +60,15 @@ def _make_test_session(
         total_cache_creation_tokens=cache_creation_tokens,
         estimated_cost_usd=cost,
         message_count=1,
-        user_message_count=0,
+        user_message_count=1,
         assistant_message_count=1,
         tool_call_count=2,
         file_read_count=1,
         file_write_count=0,
         file_edit_count=1,
         bash_count=0,
+        compaction_count=0,
+        peak_context_tokens=0,
     )
 
 
@@ -198,6 +200,20 @@ class TestRoutes:
         assert b"This Week" in resp.data
         assert b"Today" in resp.data
 
+    def test_overview_contains_effectiveness_heading(self, client):
+        resp = client.get("/")
+        assert b"Effectiveness" in resp.data
+
+    def test_overview_contains_effectiveness_cards(self, client):
+        resp = client.get("/")
+        assert b"Cache Hit Rate" in resp.data
+        assert b"Edit Ratio" in resp.data
+        assert b"Compaction Rate" in resp.data
+        assert b"Read-to-Edit" in resp.data
+        assert b"Output Ratio" in resp.data
+        assert b"Tokens / Prompt" in resp.data
+        assert b"Turns / Prompt" in resp.data
+
     def test_overview_contains_chart_headings(self, client):
         resp = client.get("/")
         assert b"Cost Over Time" in resp.data
@@ -328,6 +344,7 @@ class TestEmptyDatabase:
     def test_overview_empty(self, empty_client):
         resp = empty_client.get("/")
         assert resp.status_code == 200
+        assert b"Effectiveness" in resp.data
 
     def test_projects_empty(self, empty_client):
         resp = empty_client.get("/projects")
@@ -345,23 +362,31 @@ class TestEmptyDatabase:
 
 
 class TestSubscriptionUser:
-    """Subscription user shows 'est.' prefix on cost labels."""
+    """Subscription user hides cost from overview, projects, and sessions."""
 
-    def test_overview_shows_est(self, sub_client):
+    def test_overview_hides_cost(self, sub_client):
         resp = sub_client.get("/")
-        assert b"est." in resp.data
+        data = resp.data.decode()
+        # Cost chart canvases should not be present
+        assert 'id="costOverTimeChart"' not in data
+        assert 'id="costByProjectChart"' not in data
 
-    def test_projects_shows_est(self, sub_client):
+    def test_projects_hides_cost_columns(self, sub_client):
         resp = sub_client.get("/projects")
-        assert b"est." in resp.data
+        assert b"Total Cost" not in resp.data
+        assert b"Avg Cost/Session" not in resp.data
 
-    def test_sessions_shows_est(self, sub_client):
+    def test_sessions_hides_cost_column(self, sub_client):
         resp = sub_client.get("/sessions")
-        assert b"est." in resp.data
+        # Cost column header should not be present
+        data = resp.data.decode()
+        # The "Cost" header should not appear in the thead
+        assert ">Cost<" not in data
 
-    def test_session_detail_shows_est(self, sub_client):
+    def test_session_detail_hides_cost(self, sub_client):
         resp = sub_client.get("/sessions/sess-alpha-1")
-        assert b"est." in resp.data
+        data = resp.data.decode()
+        assert ">Cost:<" not in data
 
 
 # ===========================================================================
@@ -625,6 +650,121 @@ class TestQuerySessionDetail:
     def test_empty_db_returns_none(self, empty_db):
         result = queries.get_session_detail(empty_db, "anything")
         assert result is None
+
+
+class TestQueryEffectivenessSummary:
+    """Tests for get_effectiveness_summary — 7 exact metrics."""
+
+    def test_returns_dict_with_expected_keys(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        assert "cache_hit_rate" in result
+        assert "edit_ratio" in result
+        assert "compaction_rate" in result
+        assert "read_to_edit_ratio" in result
+        assert "output_ratio" in result
+        assert "tokens_per_user_msg" in result
+        assert "turns_per_user_prompt" in result
+        assert "session_count" in result
+
+    def test_session_count(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        assert result["session_count"] == 2
+
+    def test_cache_hit_rate(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # 2 sessions: each input=1000, cache_read=200, cache_creation=100
+        # total: cache_read=400, denom = 2000+400+200 = 2600
+        expected = 400 / 2600
+        assert abs(result["cache_hit_rate"] - expected) < 1e-6
+
+    def test_edit_ratio(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # Each session: 1 Edit + 0 Write = 1, tool_call_count=2 → total: 2/4 = 0.5
+        assert abs(result["edit_ratio"] - 0.5) < 1e-6
+
+    def test_compaction_rate_zero(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # Test sessions have compaction_count=0
+        assert result["compaction_rate"] == 0.0
+
+    def test_read_to_edit_ratio(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # Each session: 1 Read, 1 Edit + 0 Write → total: 2 reads / 2 edits = 1.0
+        assert abs(result["read_to_edit_ratio"] - 1.0) < 1e-6
+
+    def test_output_ratio(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # output=1000, input=2000, io_total=3000
+        # output_ratio = 1000/3000
+        expected = 1000 / 3000
+        assert abs(result["output_ratio"] - expected) < 1e-6
+
+    def test_tokens_per_user_msg(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # all_tokens = (input + cache_read + cache_creation + output) * 2 sessions
+        # = (1000 + 200 + 100 + 500) * 2 = 3600
+        # user_message_count = 2 (1 per session)
+        assert result["tokens_per_user_msg"] == 3600 // 2
+
+    def test_turns_per_user_prompt(self, seeded_db):
+        result = queries.get_effectiveness_summary(seeded_db)
+        # assistant_count = 2, user_count = 2 → 1.0
+        assert abs(result["turns_per_user_prompt"] - 1.0) < 1e-6
+
+    def test_empty_db_returns_zeros(self, empty_db):
+        result = queries.get_effectiveness_summary(empty_db)
+        assert result["cache_hit_rate"] == 0.0
+        assert result["edit_ratio"] == 0.0
+        assert result["compaction_rate"] == 0.0
+        assert result["tokens_per_user_msg"] == 0
+        assert result["turns_per_user_prompt"] == 0.0
+        assert result["session_count"] == 0
+
+
+class TestQueryEffectivenessTrends:
+    """Tests for get_effectiveness_trends — per-session trend data."""
+
+    def test_returns_list(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_items_have_expected_keys(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        item = result[0]
+        assert "date" in item
+        assert "session_id" in item
+        assert "cache_hit_rate" in item
+        assert "edit_ratio" in item
+        assert "had_compaction" in item
+
+    def test_cache_hit_rate_per_session(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        # Each session: cache_read=200, input=1000, cache_creation=100
+        # rate = 200 / (1000 + 200 + 100) = 200 / 1300
+        expected = round(200 / 1300, 4)
+        for item in result:
+            assert abs(item["cache_hit_rate"] - expected) < 1e-4
+
+    def test_edit_ratio_per_session(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        # Each session: 1 edit + 0 write = 1, tool_call_count=2 → 0.5
+        for item in result:
+            assert abs(item["edit_ratio"] - 0.5) < 1e-4
+
+    def test_had_compaction_false(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        for item in result:
+            assert item["had_compaction"] is False
+
+    def test_sorted_by_date(self, seeded_db):
+        result = queries.get_effectiveness_trends(seeded_db)
+        dates = [r["date"] for r in result]
+        assert dates == sorted(dates)
+
+    def test_empty_db_returns_empty_list(self, empty_db):
+        result = queries.get_effectiveness_trends(empty_db)
+        assert result == []
 
 
 class TestQueryToolCounts:

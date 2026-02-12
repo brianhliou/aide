@@ -96,6 +96,8 @@ def _make_session(
         file_write_count=0,
         file_edit_count=1,
         bash_count=0,
+        compaction_count=0,
+        peak_context_tokens=0,
     )
 
 
@@ -325,6 +327,93 @@ def test_get_summary_stats_empty(tmp_db):
     assert stats["total_projects"] == 0
     assert stats["date_range"]["min"] is None
     assert stats["sessions_by_project"] == []
+
+
+def test_ingest_sessions_stores_compaction_fields(tmp_db):
+    """Ingesting sessions stores compaction_count and peak_context_tokens."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    session.compaction_count = 2
+    session.peak_context_tokens = 180000
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT compaction_count, peak_context_tokens FROM sessions WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()
+    con.close()
+
+    assert row["compaction_count"] == 2
+    assert row["peak_context_tokens"] == 180000
+
+
+def test_ingest_sessions_compaction_defaults_to_zero(tmp_db):
+    """Default compaction values are 0 when not explicitly set."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    row = con.execute(
+        "SELECT compaction_count, peak_context_tokens FROM sessions WHERE session_id = ?",
+        ("sess-001",),
+    ).fetchone()
+    con.close()
+
+    assert row["compaction_count"] == 0
+    assert row["peak_context_tokens"] == 0
+
+
+def test_migrate_db_adds_missing_columns(tmp_db):
+    """Migration adds compaction columns to an old schema without them."""
+    import sqlite3
+
+    # Create old schema without compaction columns
+    con = sqlite3.connect(tmp_db)
+    con.execute("""CREATE TABLE IF NOT EXISTS sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        project_path TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        duration_seconds INTEGER,
+        total_input_tokens INTEGER DEFAULT 0,
+        total_output_tokens INTEGER DEFAULT 0,
+        total_cache_read_tokens INTEGER DEFAULT 0,
+        total_cache_creation_tokens INTEGER DEFAULT 0,
+        estimated_cost_usd REAL,
+        message_count INTEGER DEFAULT 0,
+        user_message_count INTEGER DEFAULT 0,
+        assistant_message_count INTEGER DEFAULT 0,
+        tool_call_count INTEGER DEFAULT 0,
+        file_read_count INTEGER DEFAULT 0,
+        file_write_count INTEGER DEFAULT 0,
+        file_edit_count INTEGER DEFAULT 0,
+        bash_count INTEGER DEFAULT 0,
+        source_file TEXT NOT NULL,
+        ingested_at TEXT DEFAULT (datetime('now'))
+    )""")
+    con.commit()
+    con.close()
+
+    from aide.db import _migrate_db
+
+    _migrate_db(tmp_db)
+
+    con = sqlite3.connect(tmp_db)
+    cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+    con.close()
+
+    assert "compaction_count" in cols
+    assert "peak_context_tokens" in cols
 
 
 def test_log_ingestion_and_get_ingested_file(tmp_db):

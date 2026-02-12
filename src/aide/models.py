@@ -67,3 +67,5 @@ class ParsedSession:
     file_write_count: int
     file_edit_count: int
     bash_count: int
+    compaction_count: int = 0
+    peak_context_tokens: int = 0

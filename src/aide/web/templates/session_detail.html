@@ -37,11 +37,20 @@
             {{ detail.message_count }}
             <span class="text-gray-500">({{ detail.user_message_count }} user, {{ detail.assistant_message_count }} assistant)</span>
         </div>
+        {% if not subscription_user %}
         <span class="text-gray-300">|</span>
         <div>
             <span class="font-semibold text-gray-900">Cost:</span>
-            {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(detail.estimated_cost_usd) }}
+            {{ "${:,.2f}".format(detail.estimated_cost_usd) }}
         </div>
+        {% endif %}
+        {% if detail.source_file %}
+        <span class="text-gray-300">|</span>
+        <div>
+            <span class="font-semibold text-gray-900">Log:</span>
+            <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded select-all cursor-pointer" title="Click to select, then copy">{{ detail.source_file }}</code>
+        </div>
+        {% endif %}
     </div>
 </div>
 

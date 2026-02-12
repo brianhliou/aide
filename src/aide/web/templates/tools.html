@@ -69,6 +69,7 @@
     // --- Data from server ---
     const toolCounts = {{ tool_counts|tojson }};
     const toolWeekly = {{ tool_weekly|tojson }};
+    const toolDaily = {{ tool_daily|tojson }};
 
     // --- Tool Usage Bar Chart ---
     const toolLabels = toolCounts.map(d => d.tool_name);
@@ -113,47 +114,47 @@
         },
     });
 
-    // --- Tool Usage Over Time (Stacked Area) ---
-    // Top tools to display (keep chart readable)
+    // --- Tool Usage Over Time (Stacked Area, daily) ---
     const topTools = ["Bash", "Edit", "Read", "Write", "Grep", "Glob"];
 
-    // Collect unique weeks (sorted)
-    const weekSet = new Set();
-    toolWeekly.forEach(d => weekSet.add(d.week_start));
-    const weeks = Array.from(weekSet).sort();
-
-    // Group data by tool_name, build a count map per week
-    const toolWeekMap = {};
-    toolWeekly.forEach(function(d) {
+    // Group data by tool_name, build {x: date, y: count} points per tool
+    const toolPointMap = {};
+    toolDaily.forEach(function(d) {
         if (topTools.indexOf(d.tool_name) === -1) return;
-        if (!toolWeekMap[d.tool_name]) toolWeekMap[d.tool_name] = {};
-        toolWeekMap[d.tool_name][d.week_start] = d.count;
+        if (!toolPointMap[d.tool_name]) toolPointMap[d.tool_name] = [];
+        toolPointMap[d.tool_name].push({ x: d.date, y: d.count });
     });
 
     // Build datasets for each tool
     const datasets = topTools
-        .filter(name => toolWeekMap[name])
+        .filter(name => toolPointMap[name])
         .map(function(name, i) {
             const color = PROJECT_COLORS[i % PROJECT_COLORS.length];
-            // Create alpha version for fill
             const alphaColor = color.replace("rgb(", "rgba(").replace(")", ", 0.3)");
             return {
                 label: name,
-                data: weeks.map(w => (toolWeekMap[name] && toolWeekMap[name][w]) || 0),
+                data: toolPointMap[name],
                 fill: true,
                 borderColor: color,
                 backgroundColor: alphaColor,
-                borderWidth: 2,
+                borderWidth: 1.5,
                 tension: 0.3,
                 pointRadius: 0,
                 pointHitRadius: 8,
             };
         });
 
-    createLineChart("toolWeeklyChart", weeks, datasets, {
+    createLineChart("toolWeeklyChart", null, datasets, {
         scales: {
             x: {
+                type: "time",
+                time: {
+                    unit: "day",
+                    tooltipFormat: "MMM d, yyyy",
+                    displayFormats: { day: "MMM d" },
+                },
                 grid: { display: false },
+                ticks: { maxTicksLimit: 12 },
             },
             y: {
                 stacked: true,

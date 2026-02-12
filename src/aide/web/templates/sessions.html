@@ -22,8 +22,13 @@
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
-                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tool Calls</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tools</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Edits</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
+                {% if not subscription_user %}
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                {% endif %}
+                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Compacted</th>
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
@@ -47,14 +52,25 @@
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.message_count }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.tool_call_count }}</td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.edits }}</td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(s.estimated_cost_usd) }}
+                    {%- if s.total_tokens >= 1000000 -%}{{ "%.1f"|format(s.total_tokens / 1000000) }}M
+                    {%- elif s.total_tokens >= 1000 -%}{{ (s.total_tokens // 1000)|int }}K
+                    {%- else -%}{{ s.total_tokens }}{%- endif -%}
+                </td>
+                {% if not subscription_user %}
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {{ "${:,.2f}".format(s.estimated_cost_usd) }}
+                </td>
+                {% endif %}
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
+                    {% if s.had_compaction %}<span class="text-amber-500" title="Context was compacted">*</span>{% endif %}
                 </td>
             </tr>
             {% endfor %}
             {% if not sessions %}
             <tr>
-                <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">No sessions found.</td>
+                <td colspan="{{ 8 if subscription_user else 9 }}" class="px-6 py-12 text-center text-sm text-gray-500">No sessions found.</td>
             </tr>
             {% endif %}
         </tbody>

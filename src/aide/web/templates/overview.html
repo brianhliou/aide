@@ -14,8 +14,7 @@
             {{ summary.last_30d.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
-            <span>{% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.last_30d.cost) }}</span>
-            <span class="text-gray-300">|</span>
+            {% if not subscription_user %}<span>{{ "${:,.2f}".format(summary.last_30d.cost) }}</span><span class="text-gray-300">|</span>{% endif %}
             <span>{{ summary.last_30d.projects }} projects</span>
         </div>
     </div>
@@ -27,8 +26,7 @@
             {{ summary.this_week.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
-            <span>{% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.this_week.cost) }}</span>
-            <span class="text-gray-300">|</span>
+            {% if not subscription_user %}<span>{{ "${:,.2f}".format(summary.this_week.cost) }}</span><span class="text-gray-300">|</span>{% endif %}
             <span>{{ summary.this_week.projects }} projects</span>
         </div>
     </div>
@@ -40,18 +38,121 @@
             {{ summary.today.sessions }} <span class="text-base font-normal text-gray-500">sessions</span>
         </div>
         <div class="text-sm text-gray-600">
-            {% if subscription_user %}est. {% endif %}{{ "${:,.2f}".format(summary.today.cost) }}
+            {% if not subscription_user %}{{ "${:,.2f}".format(summary.today.cost) }}{% else %}{{ summary.today.sessions }} session{{ "s" if summary.today.sessions != 1 else "" }} today{% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Effectiveness Metrics -->
+<div class="mb-6">
+    <h2 class="text-lg font-semibold text-gray-900 mb-4">Effectiveness</h2>
+
+    <!-- 7 metric cards: 4 top row, 3 bottom row -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+        <!-- Cache Hit Rate -->
+        <div class="bg-white rounded-lg shadow p-4" title="cache_read / (input + cache_read + cache_creation)">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cache Hit Rate</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.cache_hit_rate) }}</div>
+            <div class="text-xs text-gray-400 mt-1">% of context from cache</div>
+            {% if effectiveness.cache_hit_rate < 0.5 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Add project context to CLAUDE.md</div>
+            {% endif %}
+        </div>
+
+        <!-- Edit Ratio -->
+        <div class="bg-white rounded-lg shadow p-4" title="(file_edit + file_write) / tool_call_count">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Edit Ratio</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.edit_ratio) }}</div>
+            <div class="text-xs text-gray-400 mt-1">% of tool calls that edit</div>
+            {% if effectiveness.edit_ratio < 0.2 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Add project map to CLAUDE.md</div>
+            {% endif %}
+        </div>
+
+        <!-- Compaction Rate -->
+        <div class="bg-white rounded-lg shadow p-4" title="sessions with compaction / total sessions">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Compaction Rate</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.compaction_rate) }}</div>
+            <div class="text-xs text-gray-400 mt-1">% of sessions hitting context limits</div>
+            {% if effectiveness.compaction_rate > 0.3 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Break tasks into smaller sessions</div>
+            {% endif %}
+        </div>
+
+        <!-- Read-to-Edit Ratio -->
+        <div class="bg-white rounded-lg shadow p-4" title="file_read / max(file_edit + file_write, 1)">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Read-to-Edit</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.read_to_edit_ratio) }}x</div>
+            <div class="text-xs text-gray-400 mt-1">reads per edit</div>
+            {% if effectiveness.read_to_edit_ratio > 8 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Add key exports/types to CLAUDE.md</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
+        <!-- Output Ratio -->
+        <div class="bg-white rounded-lg shadow p-4" title="output / (input + output), excludes cache">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Output Ratio</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.output_ratio) }}</div>
+            <div class="text-xs text-gray-400 mt-1">% of non-cache tokens that are output</div>
+            {% if effectiveness.output_ratio < 0.10 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Sessions may be mostly context loading</div>
+            {% endif %}
+        </div>
+
+        <!-- Tokens per User Msg -->
+        <div class="bg-white rounded-lg shadow p-4" title="(input + cache + output) / user_message_count">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Tokens / Prompt</h3>
+            <div class="text-2xl font-bold text-gray-900">
+                {% if effectiveness.tokens_per_user_msg >= 1000000 %}{{ "{:.1f}M".format(effectiveness.tokens_per_user_msg / 1000000) }}{% elif effectiveness.tokens_per_user_msg >= 1000 %}{{ "{:.0f}K".format(effectiveness.tokens_per_user_msg / 1000) }}{% else %}{{ effectiveness.tokens_per_user_msg }}{% endif %}
+            </div>
+            <div class="text-xs text-gray-400 mt-1">avg context consumed per prompt</div>
+            {% if effectiveness.tokens_per_user_msg > 500000 and effectiveness.session_count > 0 %}
+            <div class="text-xs text-amber-600 mt-1">Tip: Consider shorter, focused sessions</div>
+            {% endif %}
+        </div>
+
+        <!-- Turns per User Prompt -->
+        <div class="bg-white rounded-lg shadow p-4" title="assistant_count / user_message_count">
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Turns / Prompt</h3>
+            <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.turns_per_user_prompt) }}</div>
+            <div class="text-xs text-gray-400 mt-1">how agentic sessions are</div>
+        </div>
+    </div>
+
+    <!-- 3 trend charts -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-sm font-semibold text-gray-900 mb-3">Cache Hit Rate Over Time</h3>
+            <div style="height: 220px;">
+                <canvas id="cacheHitRateChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-sm font-semibold text-gray-900 mb-3">Edit Ratio Over Time</h3>
+            <div style="height: 220px;">
+                <canvas id="editRatioChart"></canvas>
+            </div>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+            <h3 class="text-sm font-semibold text-gray-900 mb-3">Compaction Over Time</h3>
+            <div style="height: 220px;">
+                <canvas id="compactionChart"></canvas>
+            </div>
         </div>
     </div>
 </div>
 
 <!-- Cost Over Time -->
+{% if not subscription_user %}
 <div class="bg-white rounded-lg shadow p-6 mb-6">
     <h2 class="text-lg font-semibold text-gray-900 mb-4">Cost Over Time</h2>
     <div style="height: 300px;">
         <canvas id="costOverTimeChart"></canvas>
     </div>
 </div>
+{% endif %}
 
 <!-- Sessions Per Week -->
 <div class="bg-white rounded-lg shadow p-6 mb-6">
@@ -63,13 +164,15 @@
 
 <!-- Two-column layout for project costs and token breakdown -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-    <!-- Cost By Project -->
+    <!-- Cost By Project (API users only) -->
+    {% if not subscription_user %}
     <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold text-gray-900 mb-4">Cost By Project</h2>
         <div style="height: 300px;">
             <canvas id="costByProjectChart"></canvas>
         </div>
     </div>
+    {% endif %}
 
     <!-- Token Breakdown -->
     <div class="bg-white rounded-lg shadow p-6">
@@ -88,59 +191,142 @@
     const weeklySessions = {{ weekly_sessions|tojson }};
     const costByProject = {{ cost_by_project|tojson }};
     const tokenBreakdown = {{ token_breakdown|tojson }};
+    const effectivenessTrends = {{ effectiveness_trends|tojson }};
     const isSubscriptionUser = {{ subscription_user|tojson }};
 
+    // --- Helper: compute N-point moving average ---
+    function movingAverage(data, window) {
+        return data.map(function(_, i) {
+            const start = Math.max(0, i - window + 1);
+            const slice = data.slice(start, i + 1);
+            return slice.reduce(function(a, b) { return a + b; }, 0) / slice.length;
+        });
+    }
+
+    // --- Shared effectiveness chart options ---
+    const effChartBase = {
+        scales: {
+            x: {
+                type: "time",
+                time: {
+                    unit: "day",
+                    tooltipFormat: "MMM d, yyyy",
+                    displayFormats: { day: "MMM d" },
+                },
+                ticks: { maxTicksLimit: 8 },
+                grid: { display: false },
+            },
+            y: {
+                beginAtZero: true,
+                suggestedMax: 1.05,
+                ticks: { callback: function(v) { return formatPercent(v); } },
+            },
+        },
+        plugins: {
+            legend: {
+                onClick: function() {},
+                labels: {
+                    usePointStyle: true,
+                    pointStyleWidth: 20,
+                },
+            },
+            tooltip: {
+                callbacks: {
+                    label: function(ctx) { return ctx.dataset.label + ": " + formatPercent(ctx.parsed.y); },
+                },
+            },
+        },
+    };
+
+    // --- Effectiveness: Cache Hit Rate Over Time ---
+    if (effectivenessTrends.length > 0) {
+        const points = effectivenessTrends.map(function(d) { return { x: d.started_at, y: d.cache_hit_rate }; });
+        const rates = effectivenessTrends.map(function(d) { return d.cache_hit_rate; });
+        const avgValues = movingAverage(rates, 7);
+        const avgPoints = effectivenessTrends.map(function(d, i) { return { x: d.started_at, y: avgValues[i] }; });
+
+        createLineChart("cacheHitRateChart", null, [
+            { label: "Per Session", data: points, borderColor: AIDE_COLORS.secondary, backgroundColor: AIDE_COLORS.secondary, showLine: false, pointRadius: 3, pointHitRadius: 8, pointStyle: "circle" },
+            { label: "7-Session Avg", data: avgPoints, borderColor: AIDE_COLORS.secondary, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 8, fill: false, pointStyle: "line" },
+        ], effChartBase);
+    }
+
+    // --- Effectiveness: Edit Ratio Over Time ---
+    if (effectivenessTrends.length > 0) {
+        const points = effectivenessTrends.map(function(d) { return { x: d.started_at, y: d.edit_ratio }; });
+        const ratios = effectivenessTrends.map(function(d) { return d.edit_ratio; });
+        const avgValues = movingAverage(ratios, 7);
+        const avgPoints = effectivenessTrends.map(function(d, i) { return { x: d.started_at, y: avgValues[i] }; });
+
+        createLineChart("editRatioChart", null, [
+            { label: "Per Session", data: points, borderColor: AIDE_COLORS.primary, backgroundColor: AIDE_COLORS.primary, showLine: false, pointRadius: 3, pointHitRadius: 8, pointStyle: "circle" },
+            { label: "7-Session Avg", data: avgPoints, borderColor: AIDE_COLORS.primary, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 8, fill: false, pointStyle: "line" },
+        ], effChartBase);
+    }
+
+    // --- Effectiveness: Compaction Over Time ---
+    if (effectivenessTrends.length > 0) {
+        const points = effectivenessTrends.map(function(d) { return { x: d.started_at, y: d.had_compaction ? 1 : 0 }; });
+        const compactions = effectivenessTrends.map(function(d) { return d.had_compaction ? 1 : 0; });
+        const runningRateValues = movingAverage(compactions, 7);
+        const avgPoints = effectivenessTrends.map(function(d, i) { return { x: d.started_at, y: runningRateValues[i] }; });
+
+        createLineChart("compactionChart", null, [
+            { label: "Had Compaction", data: points, borderColor: AIDE_COLORS.danger, backgroundColor: AIDE_COLORS.danger, showLine: false, pointRadius: 3, pointHitRadius: 8, pointStyle: "circle" },
+            { label: "Running Rate", data: avgPoints, borderColor: AIDE_COLORS.danger, borderWidth: 2, tension: 0.3, pointRadius: 0, pointHitRadius: 8, fill: false, pointStyle: "line" },
+        ], effChartBase);
+    }
+
     // --- Cost Over Time (line chart with daily cost + 7-day avg) ---
-    createLineChart(
-        "costOverTimeChart",
-        dailyCosts.map(d => d.date),
-        [
+    if (!isSubscriptionUser && document.getElementById("costOverTimeChart")) {
+        createLineChart(
+            "costOverTimeChart",
+            dailyCosts.map(d => d.date),
+            [
+                {
+                    label: "Daily Cost",
+                    data: dailyCosts.map(d => d.cost),
+                    borderColor: AIDE_COLORS.primary,
+                    backgroundColor: AIDE_COLORS_ALPHA.primary,
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                },
+                {
+                    label: "7-Day Avg",
+                    data: dailyCosts.map(d => d.cost_7d_avg),
+                    borderColor: AIDE_COLORS.secondary,
+                    borderDash: [6, 3],
+                    fill: false,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    pointHitRadius: 8,
+                    borderWidth: 2,
+                },
+            ],
             {
-                label: "Daily Cost",
-                data: dailyCosts.map(d => d.cost),
-                borderColor: AIDE_COLORS.primary,
-                backgroundColor: AIDE_COLORS_ALPHA.primary,
-                fill: true,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHitRadius: 8,
-                borderWidth: 2,
-            },
-            {
-                label: "7-Day Avg",
-                data: dailyCosts.map(d => d.cost_7d_avg),
-                borderColor: AIDE_COLORS.secondary,
-                borderDash: [6, 3],
-                fill: false,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHitRadius: 8,
-                borderWidth: 2,
-            },
-        ],
-        {
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        callback: function(value) {
-                            return (isSubscriptionUser ? "est. " : "") + formatCost(value);
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) { return formatCost(value); },
                         },
                     },
                 },
-            },
-            plugins: {
-                tooltip: {
-                    callbacks: {
-                        label: function(ctx) {
-                            const prefix = isSubscriptionUser ? "est. " : "";
-                            return ctx.dataset.label + ": " + prefix + formatCost(ctx.parsed.y);
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                return ctx.dataset.label + ": " + formatCost(ctx.parsed.y);
+                            },
                         },
                     },
                 },
-            },
-        }
-    );
+            }
+        );
+    }
 
     // --- Sessions Per Week (bar chart) ---
     createBarChart(
@@ -160,59 +346,54 @@
         }
     );
 
-    // --- Cost By Project (horizontal bar chart) ---
-    (function() {
-        const labels = costByProject.map(d => d.project_name);
-        const data = costByProject.map(d => d.total_cost);
-        const colors = labels.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
+    // --- Cost By Project (horizontal bar chart, API users only) ---
+    if (!isSubscriptionUser && document.getElementById("costByProjectChart")) {
+        (function() {
+            const labels = costByProject.map(d => d.project_name);
+            const data = costByProject.map(d => d.total_cost);
+            const colors = labels.map((_, i) => PROJECT_COLORS[i % PROJECT_COLORS.length]);
 
-        const ctx = document.getElementById("costByProjectChart").getContext("2d");
-        new Chart(ctx, {
-            type: "bar",
-            data: {
-                labels: labels,
-                datasets: [{
-                    data: data,
-                    backgroundColor: colors,
-                    borderRadius: 4,
-                }],
-            },
-            options: {
-                indexAxis: "y",
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: function(ctx) {
-                                const prefix = isSubscriptionUser ? "est. " : "";
-                                return prefix + formatCost(ctx.parsed.x);
+            const ctx = document.getElementById("costByProjectChart").getContext("2d");
+            new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderRadius: 4,
+                    }],
+                },
+                options: {
+                    indexAxis: "y",
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(ctx) { return formatCost(ctx.parsed.x); },
                             },
                         },
                     },
-                },
-                scales: {
-                    x: {
-                        beginAtZero: true,
-                        ticks: {
-                            callback: function(value) {
-                                return (isSubscriptionUser ? "est. " : "") + formatCost(value);
+                    scales: {
+                        x: {
+                            beginAtZero: true,
+                            ticks: {
+                                callback: function(value) { return formatCost(value); },
+                                font: { size: 11, family: "system-ui, sans-serif" },
                             },
-                            font: { size: 11, family: "system-ui, sans-serif" },
+                            grid: { color: "rgba(0, 0, 0, 0.05)" },
                         },
-                        grid: { color: "rgba(0, 0, 0, 0.05)" },
-                    },
-                    y: {
-                        ticks: {
-                            font: { size: 11, family: "system-ui, sans-serif" },
+                        y: {
+                            ticks: { font: { size: 11, family: "system-ui, sans-serif" } },
+                            grid: { display: false },
                         },
-                        grid: { display: false },
                     },
                 },
-            },
-        });
-    })();
+            });
+        })();
+    }
 
     // --- Token Breakdown (doughnut chart) ---
     createPieChart(

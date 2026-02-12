@@ -12,8 +12,10 @@
             <tr>
                 <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Sessions</th>
+                {% if not subscription_user %}
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Cost</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Cost/Session</th>
+                {% endif %}
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
             </tr>
@@ -29,12 +31,14 @@
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
                     {{ p.session_count }}
                 </td>
+                {% if not subscription_user %}
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    {% if subscription_user %}est. {% endif %}${{ "%.2f"|format(p.total_cost) }}
+                    ${{ "%.2f"|format(p.total_cost) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    {% if subscription_user %}est. {% endif %}${{ "%.2f"|format(p.avg_cost_per_session) }}
+                    ${{ "%.2f"|format(p.avg_cost_per_session) }}
                 </td>
+                {% endif %}
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
                     {%- set hours = (p.total_duration_seconds // 3600)|int -%}
                     {%- set minutes = ((p.total_duration_seconds % 3600) // 60)|int -%}
@@ -59,7 +63,7 @@
             {% endfor %}
             {% if not projects %}
             <tr>
-                <td colspan="6" class="px-6 py-12 text-center text-sm text-gray-500">No projects found. Run <code class="bg-gray-100 px-1 rounded">aide ingest</code> first.</td>
+                <td colspan="{{ 4 if subscription_user else 6 }}" class="px-6 py-12 text-center text-sm text-gray-500">No projects found. Run <code class="bg-gray-100 px-1 rounded">aide ingest</code> first.</td>
             </tr>
             {% endif %}
         </tbody>
@@ -68,6 +72,7 @@
 
 <p class="text-sm text-gray-500 mb-8">Click a project to see its sessions.</p>
 
+{% if not subscription_user %}
 {# --- Cost per session scatter plot --- #}
 <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-lg font-semibold mb-4">Cost Per Session by Project</h2>
@@ -75,6 +80,7 @@
         <canvas id="costPerSessionChart"></canvas>
     </div>
 </div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -82,6 +88,7 @@
 (function() {
     const rawData = {{ scatter_data|tojson }};
     const subscriptionUser = {{ subscription_user|tojson }};
+    if (subscriptionUser) return;
 
     // Group scatter data by project name
     const grouped = {};

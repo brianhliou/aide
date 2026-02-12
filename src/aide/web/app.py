@@ -25,4 +25,8 @@ def create_app(config: AideConfig) -> Flask:
 
     app.register_blueprint(bp)
 
+    @app.context_processor
+    def inject_globals():
+        return {"subscription_user": app.config["SUBSCRIPTION_USER"]}
+
     return app

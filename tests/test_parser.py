@@ -234,3 +234,154 @@ class TestProjectNameDerivation:
     def test_deep_path(self):
         name = _derive_project_name("-Users-alice-projects-deep-nested-thing")
         assert name == "deep-nested-thing"
+
+
+# ---------------------------------------------------------------------------
+# compaction detection
+# ---------------------------------------------------------------------------
+
+
+class TestCompactionDetection:
+    """Tests for compaction_count and peak_context_tokens computation."""
+
+    def test_no_compaction_in_sample(self, sample_jsonl):
+        """Sample sessions have small context — no compactions."""
+        session = parse_jsonl_file(sample_jsonl)[0]
+        assert session.compaction_count == 0
+
+    def test_peak_context_tokens_in_sample(self, sample_jsonl):
+        """Peak context is max(input + cache_read + cache_creation) across assistant messages."""
+        session = parse_jsonl_file(sample_jsonl)[0]
+        assert session.peak_context_tokens > 0
+
+    def test_compaction_detected(self, tmp_path):
+        """A >50% context drop from >100K triggers compaction detection."""
+        import json
+
+        lines = [
+            # Assistant msg 1: context = 200K (above 100K threshold)
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-compact",
+                "uuid": "m1",
+                "parentUuid": None,
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "hello",
+                    "usage": {
+                        "input_tokens": 150000,
+                        "output_tokens": 100,
+                        "cache_read_input_tokens": 50000,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+            # Assistant msg 2: context drops to 40K (<50% of 200K)
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-compact",
+                "uuid": "m2",
+                "parentUuid": "m1",
+                "timestamp": "2026-01-01T00:00:02.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "world",
+                    "usage": {
+                        "input_tokens": 30000,
+                        "output_tokens": 200,
+                        "cache_read_input_tokens": 10000,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+            # Assistant msg 3: context grows to 180K
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-compact",
+                "uuid": "m3",
+                "parentUuid": "m2",
+                "timestamp": "2026-01-01T00:00:03.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "again",
+                    "usage": {
+                        "input_tokens": 120000,
+                        "output_tokens": 300,
+                        "cache_read_input_tokens": 60000,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+            # Assistant msg 4: drops to 50K (<50% of 180K)
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-compact",
+                "uuid": "m4",
+                "parentUuid": "m3",
+                "timestamp": "2026-01-01T00:00:04.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "final",
+                    "usage": {
+                        "input_tokens": 40000,
+                        "output_tokens": 50,
+                        "cache_read_input_tokens": 10000,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+        ]
+        jsonl = tmp_path / "compact-test.jsonl"
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        session = parse_jsonl_file(jsonl)[0]
+        assert session.compaction_count == 2
+        assert session.peak_context_tokens == 200000
+
+    def test_no_compaction_below_threshold(self, tmp_path):
+        """Context drop below 100K threshold is not counted as compaction."""
+        import json
+
+        lines = [
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-small",
+                "uuid": "m1",
+                "parentUuid": None,
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "hi",
+                    "usage": {
+                        "input_tokens": 80000,
+                        "output_tokens": 100,
+                        "cache_read_input_tokens": 10000,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+            json.dumps({
+                "type": "assistant",
+                "sessionId": "sess-small",
+                "uuid": "m2",
+                "parentUuid": "m1",
+                "timestamp": "2026-01-01T00:00:02.000Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "lo",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 50,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }),
+        ]
+        jsonl = tmp_path / "no-compact.jsonl"
+        jsonl.write_text("\n".join(lines) + "\n")
+
+        session = parse_jsonl_file(jsonl)[0]
+        assert session.compaction_count == 0
+        assert session.peak_context_tokens == 90000

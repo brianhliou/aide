@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from flask import Blueprint, current_app, render_template, request
+from flask import Blueprint, current_app, redirect, render_template, request
 
+from aide.config import save_config_value
 from aide.web import queries
 
 bp = Blueprint("dashboard", __name__)
@@ -21,6 +22,8 @@ def overview():
         weekly_sessions=queries.get_weekly_session_counts(db_path),
         cost_by_project=queries.get_cost_by_project(db_path),
         token_breakdown=queries.get_token_breakdown(db_path),
+        effectiveness=queries.get_effectiveness_summary(db_path),
+        effectiveness_trends=queries.get_effectiveness_trends(db_path),
         subscription_user=sub,
     )
 
@@ -71,9 +74,22 @@ def session_detail(session_id):
 def tools():
     """Tool usage page with charts and top files table."""
     db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
     return render_template(
         "tools.html",
         tool_counts=queries.get_tool_counts(db_path),
         tool_weekly=queries.get_tool_weekly(db_path),
+        tool_daily=queries.get_tool_daily(db_path),
         top_files=queries.get_top_files(db_path),
+        subscription_user=sub,
     )
+
+
+@bp.route("/settings/subscription", methods=["POST"])
+def toggle_subscription():
+    """Toggle subscription_user setting and reload the page."""
+    current = current_app.config["SUBSCRIPTION_USER"]
+    new_value = not current
+    save_config_value("subscription_user", new_value)
+    current_app.config["SUBSCRIPTION_USER"] = new_value
+    return redirect(request.referrer or "/")

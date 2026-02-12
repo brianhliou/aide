@@ -79,7 +79,8 @@ const CHART_DEFAULTS = {
 /**
  * Create a line chart.
  * @param {string} canvasId - The canvas element ID.
- * @param {string[]} labels - X-axis labels.
+ * @param {string[]|null} labels - X-axis labels.  Pass null for time-axis mode
+ *     where each dataset uses {x, y} data points.
  * @param {object[]} datasets - Chart.js dataset objects (label, data, borderColor, etc.).
  * @param {object} [options] - Additional Chart.js options to merge.
  * @returns {Chart}
@@ -87,9 +88,10 @@ const CHART_DEFAULTS = {
 function createLineChart(canvasId, labels, datasets, options) {
     const ctx = document.getElementById(canvasId).getContext("2d");
     const merged = deepMerge({}, CHART_DEFAULTS, options || {});
+    const chartData = labels ? { labels, datasets } : { datasets };
     return new Chart(ctx, {
         type: "line",
-        data: { labels, datasets },
+        data: chartData,
         options: merged,
     });
 }
@@ -252,11 +254,21 @@ function formatDuration(seconds) {
     return Math.max(m, 1) + "m";
 }
 
+/**
+ * Format a decimal ratio as a percentage: 0.72 → "72%"
+ * @param {number} value - A ratio between 0 and 1.
+ * @returns {string}
+ */
+function formatPercent(value) {
+    return ((value || 0) * 100).toFixed(0) + "%";
+}
+
 
 // --- Internal helpers ---
 
 /**
  * Deep merge objects (simple recursive, handles plain objects only).
+ * Always creates new nested objects to avoid mutating sources.
  */
 function deepMerge(target, ...sources) {
     for (const source of sources) {
@@ -265,11 +277,11 @@ function deepMerge(target, ...sources) {
             if (
                 source[key] &&
                 typeof source[key] === "object" &&
-                !Array.isArray(source[key]) &&
-                target[key] &&
-                typeof target[key] === "object" &&
-                !Array.isArray(target[key])
+                !Array.isArray(source[key])
             ) {
+                if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) {
+                    target[key] = {};
+                }
                 deepMerge(target[key], source[key]);
             } else {
                 target[key] = source[key];

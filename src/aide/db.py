@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     file_write_count INTEGER DEFAULT 0,
     file_edit_count INTEGER DEFAULT 0,
     bash_count INTEGER DEFAULT 0,
+    compaction_count INTEGER DEFAULT 0,
+    peak_context_tokens INTEGER DEFAULT 0,
     source_file TEXT NOT NULL,
     ingested_at TEXT DEFAULT (datetime('now'))
 );
@@ -86,10 +88,25 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 
 
 def init_db(db_path: Path) -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, then run any needed migrations."""
     con = sqlite3.connect(db_path)
     try:
         con.executescript(_SCHEMA)
+        con.commit()
+    finally:
+        con.close()
+    _migrate_db(db_path)
+
+
+def _migrate_db(db_path: Path) -> None:
+    """Add columns that may be missing from older databases."""
+    con = sqlite3.connect(db_path)
+    try:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
+        if "compaction_count" not in cols:
+            con.execute("ALTER TABLE sessions ADD COLUMN compaction_count INTEGER DEFAULT 0")
+        if "peak_context_tokens" not in cols:
+            con.execute("ALTER TABLE sessions ADD COLUMN peak_context_tokens INTEGER DEFAULT 0")
         con.commit()
     finally:
         con.close()
@@ -125,8 +142,9 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                     total_cache_read_tokens, total_cache_creation_tokens,
                     estimated_cost_usd, message_count, user_message_count,
                     assistant_message_count, tool_call_count, file_read_count,
-                    file_write_count, file_edit_count, bash_count, source_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    file_write_count, file_edit_count, bash_count,
+                    compaction_count, peak_context_tokens, source_file
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     s.session_id,
                     s.project_path,
@@ -147,6 +165,8 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                     s.file_write_count,
                     s.file_edit_count,
                     s.bash_count,
+                    s.compaction_count,
+                    s.peak_context_tokens,
                     s.source_file,
                 ),
             )

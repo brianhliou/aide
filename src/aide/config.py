@@ -25,6 +25,25 @@ class AideConfig:
     db_path: Path
 
 
+def save_config_value(key: str, value: object, config_path: Path | None = None) -> None:
+    """Update a single key in the config file, preserving other settings."""
+    if config_path is None:
+        config_path = CONFIG_PATH
+    config_path = config_path.expanduser()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing: dict = {}
+    if config_path.is_file():
+        with open(config_path) as f:
+            loaded = yaml.safe_load(f)
+        if isinstance(loaded, dict):
+            existing = loaded
+
+    existing[key] = value
+    with open(config_path, "w") as f:
+        yaml.dump(existing, f, default_flow_style=False)
+
+
 def load_config(config_path: Path | None = None) -> AideConfig:
     """Load config from ~/.config/aide/config.yaml, merged with defaults.
 
