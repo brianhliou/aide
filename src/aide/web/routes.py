@@ -63,7 +63,7 @@ def session_detail(session_id):
     sub = current_app.config["SUBSCRIPTION_USER"]
     detail = queries.get_session_detail(db_path, session_id)
     if detail is None:
-        return "Session not found", 404
+        return render_template("404.html", message="Session not found"), 404
     return render_template(
         "session_detail.html",
         detail=detail,

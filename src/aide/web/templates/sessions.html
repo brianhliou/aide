@@ -56,7 +56,7 @@
                     {% set minutes = (dur % 3600) // 60 %}
                     {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
                     {% if s.work_block_count and s.work_block_count > 1 %}
-                    <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700" title="{{ s.work_block_count }} work blocks">{{ s.work_block_count }}b</span>
+                    <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700" title="Session had {{ s.work_block_count }} separate coding blocks, split at 30-min idle gaps">{{ s.work_block_count }} blocks</span>
                     {% endif %}
                     {% else %}&mdash;{% endif %}
                 </td>

@@ -28,92 +28,98 @@
 </div>
 
 <!-- Summary Stats -->
-<div class="bg-white rounded-lg shadow p-6 mb-6">
-    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
-        <div>
-            <span class="font-semibold text-gray-900">Active:</span>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <!-- Duration -->
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Active Time</div>
+        <div class="text-2xl font-bold text-gray-900">
             {% set active = detail.active_duration_seconds or detail.duration_seconds or 0 %}
             {% if active %}
             {% set a_hours = active // 3600 %}
             {% set a_minutes = (active % 3600) // 60 %}
             {% if a_hours > 0 %}{{ a_hours }}h {{ a_minutes }}m{% else %}{{ a_minutes if a_minutes > 0 else 1 }}m{% endif %}
             {% else %}&mdash;{% endif %}
+        </div>
+        <div class="text-xs text-gray-400 mt-1">
             {% if detail.duration_seconds and detail.active_duration_seconds and detail.duration_seconds != detail.active_duration_seconds %}
-            <span class="text-gray-400 text-xs ml-1">
-                (wall: {% set w_hours = detail.duration_seconds // 3600 %}{% set w_minutes = (detail.duration_seconds % 3600) // 60 %}{% if w_hours > 0 %}{{ w_hours }}h {{ w_minutes }}m{% else %}{{ w_minutes }}m{% endif %})
-            </span>
+            {% set w_hours = detail.duration_seconds // 3600 %}{% set w_minutes = (detail.duration_seconds % 3600) // 60 %}wall: {% if w_hours > 0 %}{{ w_hours }}h {{ w_minutes }}m{% else %}{{ w_minutes }}m{% endif %}
             {% endif %}
             {% if detail.work_blocks and detail.work_blocks|length > 1 %}
-            <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">{{ detail.work_blocks|length }} blocks</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700">{{ detail.work_blocks|length }} blocks</span>
             {% endif %}
         </div>
-        <span class="text-gray-300">|</span>
-        <div>
-            <span class="font-semibold text-gray-900">Messages:</span>
-            {{ detail.message_count }}
-            <span class="text-gray-500">({{ detail.user_message_count }} user, {{ detail.assistant_message_count }} assistant)</span>
-        </div>
-        {% if not subscription_user %}
-        <span class="text-gray-300">|</span>
-        <div>
-            <span class="font-semibold text-gray-900">Cost:</span>
-            {{ "${:,.2f}".format(detail.estimated_cost_usd) }}
-        </div>
-        {% endif %}
-        {% if detail.git_branch %}
-        <span class="text-gray-300">|</span>
-        <div>
-            <span class="font-semibold text-gray-900">Branch:</span>
-            <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{{ detail.git_branch }}</code>
-        </div>
-        {% endif %}
-        {% if detail.tool_error_count and detail.tool_error_count > 0 %}
-        <span class="text-gray-300">|</span>
-        <div>
-            <span class="font-semibold text-gray-900">Errors:</span>
-            <span class="text-gray-700">{{ detail.tool_error_count }}</span>
-            {% if detail.error_breakdown %}
-            <span class="text-gray-400 text-xs ml-1">
-                ({% for e in detail.error_breakdown[:3] %}{{ e.category }}: {{ e.count }}{% if not loop.last %}, {% endif %}{% endfor %})
-            </span>
-            {% endif %}
-        </div>
-        {% endif %}
-        {% if detail.first_prompt_len and detail.first_prompt_len > 0 %}
-        <span class="text-gray-300">|</span>
-        <div>
-            <span class="font-semibold text-gray-900">First Prompt:</span>
-            {{ "{:,}".format(detail.first_prompt_len) }} chars
-        </div>
-        {% endif %}
+    </div>
+
+    <!-- Messages -->
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Messages</div>
+        <div class="text-2xl font-bold text-gray-900">{{ detail.message_count }}</div>
+        <div class="text-xs text-gray-400 mt-1">{{ detail.user_message_count }} user, {{ detail.assistant_message_count }} assistant</div>
+    </div>
+
+    <!-- Cost (API only) or Files -->
+    {% if not subscription_user %}
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Cost</div>
+        <div class="text-2xl font-bold text-gray-900">{{ "${:,.2f}".format(detail.estimated_cost_usd) }}</div>
         {% if detail.unique_files and detail.unique_files > 0 %}
-        <span class="text-gray-300">|</span>
+        <div class="text-xs text-gray-400 mt-1">{{ detail.unique_files }} files touched</div>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Files</div>
+        <div class="text-2xl font-bold text-gray-900">{{ detail.unique_files or 0 }}</div>
+        <div class="text-xs text-gray-400 mt-1">unique files touched</div>
+    </div>
+    {% endif %}
+
+    <!-- Errors -->
+    <div class="bg-white rounded-lg shadow p-4">
+        <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Errors</div>
+        <div class="text-2xl font-bold {% if detail.tool_error_count and detail.tool_error_count > 0 %}text-red-600{% else %}text-gray-900{% endif %}">
+            {{ detail.tool_error_count or 0 }}
+        </div>
+        {% if detail.error_breakdown %}
+        <div class="text-xs text-gray-400 mt-1">
+            {% for e in detail.error_breakdown[:3] %}{{ e.category }}: {{ e.count }}{% if not loop.last %}, {% endif %}{% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Session Metadata -->
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-500">
+        {% if detail.git_branch %}
         <div>
-            <span class="font-semibold text-gray-900">Focus:</span>
-            {{ "{:.0%}".format(1 - detail.file_focus_ratio) }}
-            <span class="text-gray-400 text-xs">({{ detail.unique_files }} unique files)</span>
+            <span class="font-medium text-gray-600">Branch:</span>
+            <code class="bg-gray-100 px-1.5 py-0.5 rounded">{{ detail.git_branch }}</code>
         </div>
         {% endif %}
         {% if detail.permission_mode %}
-        <span class="text-gray-300">|</span>
         <div>
-            <span class="font-semibold text-gray-900">Mode:</span>
-            <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{{ detail.permission_mode }}</code>
+            <span class="font-medium text-gray-600">Mode:</span>
+            <code class="bg-gray-100 px-1.5 py-0.5 rounded">{{ detail.permission_mode }}</code>
+        </div>
+        {% endif %}
+        {% if detail.first_prompt_len and detail.first_prompt_len > 0 %}
+        <div>
+            <span class="font-medium text-gray-600">First prompt:</span>
+            {{ "{:,}".format(detail.first_prompt_len) }} chars
         </div>
         {% endif %}
         {% if detail.total_thinking_chars and detail.total_thinking_chars > 0 %}
-        <span class="text-gray-300">|</span>
         <div>
-            <span class="font-semibold text-gray-900">Thinking:</span>
+            <span class="font-medium text-gray-600">Thinking:</span>
             {{ "{:,}".format(detail.total_thinking_chars) }} chars
-            <span class="text-gray-400 text-xs">({{ "{:.0%}".format(detail.thinking_ratio) }} of turns)</span>
+            ({{ "{:.0%}".format(detail.thinking_ratio) }} of turns)
         </div>
         {% endif %}
         {% if detail.source_file %}
-        <span class="text-gray-300">|</span>
         <div>
-            <span class="font-semibold text-gray-900">Log:</span>
-            <code class="text-xs bg-gray-100 px-1.5 py-0.5 rounded select-all cursor-pointer" title="Click to select, then copy">{{ detail.source_file }}</code>
+            <span class="font-medium text-gray-600">Log:</span>
+            <code class="bg-gray-100 px-1.5 py-0.5 rounded select-all cursor-pointer" title="Click to select, then copy">{{ detail.source_file }}</code>
         </div>
         {% endif %}
     </div>

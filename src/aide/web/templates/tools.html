@@ -13,7 +13,7 @@
     </div>
 </div>
 
-{# --- Tool Usage Over Time (Stacked Area) --- #}
+{# --- Tool Usage Over Time (Stacked Bar, weekly) --- #}
 <div class="bg-white rounded-lg shadow p-6 mb-6">
     <h2 class="text-lg font-semibold text-gray-900 mb-4">Tool Usage Over Time</h2>
     <div style="height: 350px;">
@@ -234,60 +234,56 @@
         }
     }
 
-    // --- Tool Usage Over Time (Stacked Area, daily) ---
+    // --- Tool Usage Over Time (Stacked Bar, daily) ---
     const topTools = ["Bash", "Edit", "Read", "Write", "Grep", "Glob"];
 
-    // Group data by tool_name, build {x: date, y: count} points per tool
-    const toolPointMap = {};
+    // Group counts by tool and date
+    const toolDayMap = {};
     toolDaily.forEach(function(d) {
         if (topTools.indexOf(d.tool_name) === -1) return;
-        if (!toolPointMap[d.tool_name]) toolPointMap[d.tool_name] = [];
-        toolPointMap[d.tool_name].push({ x: d.date, y: d.count });
+        if (!toolDayMap[d.tool_name]) toolDayMap[d.tool_name] = {};
+        toolDayMap[d.tool_name][d.date] = d.count;
     });
 
-    // Build datasets for each tool
+    // Build continuous date range so spacing is even
+    const allDatesRaw = toolDaily.map(d => d.date).sort();
+    let dates = [];
+    if (allDatesRaw.length > 0) {
+        const start = new Date(allDatesRaw[0]);
+        const end = new Date(allDatesRaw[allDatesRaw.length - 1]);
+        for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+            dates.push(d.toISOString().slice(0, 10));
+        }
+    }
+
+    // Build a dataset per tool with count for each day
     const datasets = topTools
-        .filter(name => toolPointMap[name])
+        .filter(name => toolDayMap[name])
         .map(function(name, i) {
-            const color = PROJECT_COLORS[i % PROJECT_COLORS.length];
-            const alphaColor = color.replace("rgb(", "rgba(").replace(")", ", 0.3)");
             return {
                 label: name,
-                data: toolPointMap[name],
-                fill: true,
-                borderColor: color,
-                backgroundColor: alphaColor,
-                borderWidth: 1.5,
-                tension: 0.3,
-                pointRadius: 0,
-                pointHitRadius: 8,
+                data: dates.map(d => (toolDayMap[name] && toolDayMap[name][d]) || 0),
+                backgroundColor: PROJECT_COLORS[i % PROJECT_COLORS.length],
+                borderRadius: 1,
             };
         });
 
-    createLineChart("toolWeeklyChart", null, datasets, {
-        scales: {
-            x: {
-                type: "time",
-                time: {
-                    unit: "day",
-                    tooltipFormat: "MMM d, yyyy",
-                    displayFormats: { day: "MMM d" },
+    if (dates.length > 0) {
+        const ctx2 = document.getElementById("toolWeeklyChart").getContext("2d");
+        new Chart(ctx2, {
+            type: "bar",
+            data: { labels: dates, datasets: datasets },
+            options: deepMerge({}, CHART_DEFAULTS, {
+                scales: {
+                    x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 15 } },
+                    y: { stacked: true, beginAtZero: true },
                 },
-                grid: { display: false },
-                ticks: { maxTicksLimit: 12 },
-            },
-            y: {
-                stacked: true,
-                beginAtZero: true,
-            },
-        },
-        plugins: {
-            legend: {
-                display: true,
-                position: "top",
-            },
-        },
-    });
+                plugins: {
+                    legend: { display: true, position: "top" },
+                },
+            }),
+        });
+    }
 })();
 </script>
 {% endblock %}

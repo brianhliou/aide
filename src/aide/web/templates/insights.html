@@ -9,7 +9,7 @@
 {% if first_prompt.buckets %}
 <div class="bg-white rounded-lg shadow p-6 mb-6">
     <h2 class="text-lg font-semibold text-gray-900 mb-1">First Prompt Effectiveness</h2>
-    <p class="text-xs text-gray-500 mb-4">Sessions with detailed first prompts cost less and produce fewer errors.</p>
+    <p class="text-xs text-gray-500 mb-4">How first prompt length correlates with session outcomes.</p>
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div style="height: 280px;">
             <canvas id="firstPromptChart"></canvas>
@@ -44,11 +44,13 @@
             {% if first_prompt.buckets|length >= 2 %}
             {% set first = first_prompt.buckets[0] %}
             {% set last = first_prompt.buckets[-1] %}
-            {% if first.avg_cost > last.avg_cost and last.avg_cost > 0 %}
+            {% if first.avg_errors > 0 and last.avg_errors < first.avg_errors %}
             <div class="mt-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm text-blue-800">
                 Detailed first prompts ({{ last.label }}) average
-                {{ "{:.0%}".format(1 - last.avg_cost / first.avg_cost) }} less cost
-                and {{ "{:.0%}".format(1 - last.avg_errors / first.avg_errors) if first.avg_errors > 0 else "fewer" }} fewer errors
+                {{ "{:.0%}".format(1 - last.avg_errors / first.avg_errors) }} fewer errors
+                {% if not subscription_user and first.avg_cost > last.avg_cost and last.avg_cost > 0 %}
+                and {{ "{:.0%}".format(1 - last.avg_cost / first.avg_cost) }} less cost
+                {% endif %}
                 than short ones ({{ first.label }}).
             </div>
             {% endif %}
@@ -108,13 +110,15 @@
 {# --- Cost Per Edit by Duration --- #}
 {% if cost_per_edit %}
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    {% if not subscription_user %}
     <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Cost Per Edit</h2>
-        <p class="text-xs text-gray-500 mb-4">Longer sessions are slightly more cost-efficient per edit.</p>
+        <p class="text-xs text-gray-500 mb-4">Average cost per file change by session length.</p>
         <div style="height: 260px;">
             <canvas id="costPerEditChart"></canvas>
         </div>
     </div>
+    {% endif %}
 
     {# --- Model Usage --- #}
     {% if model_breakdown %}
@@ -142,7 +146,7 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
     <div class="bg-white rounded-lg shadow p-6">
         <h2 class="text-lg font-semibold text-gray-900 mb-1">Work Blocks by Hour</h2>
-        <p class="text-xs text-gray-500 mb-4">When you start focused coding blocks.</p>
+        <p class="text-xs text-gray-500 mb-4">When you start focused coding blocks. <span class="text-gray-400" title="A work block is a continuous coding period, split at 30-minute idle gaps">(?)</span></p>
         <div style="height: 260px;">
             <canvas id="hourChart"></canvas>
         </div>
@@ -362,7 +366,7 @@
     }
 
     // --- Cost Per Edit by Duration ---
-    if (costPerEdit.length > 0 && document.getElementById("costPerEditChart")) {
+    if (!isSubscriptionUser && costPerEdit.length > 0 && document.getElementById("costPerEditChart")) {
         createBarChart(
             "costPerEditChart",
             costPerEdit.map(d => d.label),

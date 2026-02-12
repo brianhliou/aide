@@ -222,9 +222,9 @@ class TestRoutes:
         assert b"Edit Ratio" in resp.data
         assert b"Compaction Rate" in resp.data
         assert b"Read-to-Edit" in resp.data
-        assert b"Output Ratio" in resp.data
-        assert b"Tokens / Prompt" in resp.data
         assert b"Turns / Prompt" in resp.data
+        assert b"Error Rate" in resp.data
+        assert b"Iteration Rate" in resp.data
 
     def test_overview_contains_chart_headings(self, client):
         resp = client.get("/")

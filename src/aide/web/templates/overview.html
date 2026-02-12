@@ -11,7 +11,7 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Last 30 Days</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.last_30d.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
+            {{ summary.last_30d.work_blocks }} <span class="text-base font-normal text-gray-500" title="Continuous coding periods within sessions, split at 30-minute idle gaps">work blocks</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
             <span>{{ summary.last_30d.sessions }} sessions</span>
@@ -24,7 +24,7 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">This Week</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.this_week.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
+            {{ summary.this_week.work_blocks }} <span class="text-base font-normal text-gray-500" title="Continuous coding periods within sessions, split at 30-minute idle gaps">work blocks</span>
         </div>
         <div class="flex items-center gap-4 text-sm text-gray-600">
             <span>{{ summary.this_week.sessions }} sessions</span>
@@ -37,7 +37,7 @@
     <div class="bg-white rounded-lg shadow p-6">
         <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-3">Today</h3>
         <div class="text-3xl font-bold text-gray-900 mb-2">
-            {{ summary.today.work_blocks }} <span class="text-base font-normal text-gray-500">work blocks</span>
+            {{ summary.today.work_blocks }} <span class="text-base font-normal text-gray-500" title="Continuous coding periods within sessions, split at 30-minute idle gaps">work blocks</span>
         </div>
         <div class="text-sm text-gray-600">
             {% if not subscription_user %}{{ "${:,.2f}".format(summary.today.cost) }}{% else %}{{ summary.today.sessions }} session{{ "s" if summary.today.sessions != 1 else "" }} today{% endif %}
@@ -57,7 +57,7 @@
             <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.cache_hit_rate) }}</div>
             <div class="text-xs text-gray-400 mt-1">% of context from cache</div>
             {% if effectiveness.cache_hit_rate < 0.5 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Add project context to CLAUDE.md</div>
+            <div class="text-xs text-amber-600 mt-1">Tip: Keep sessions focused on one task</div>
             {% endif %}
         </div>
 
@@ -67,7 +67,7 @@
             <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.edit_ratio) }}</div>
             <div class="text-xs text-gray-400 mt-1">% of tool calls that edit</div>
             {% if effectiveness.edit_ratio < 0.2 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Add project map to CLAUDE.md</div>
+            <div class="text-xs text-amber-600 mt-1">Tip: Use detailed prompts with file paths</div>
             {% endif %}
         </div>
 
@@ -87,39 +87,17 @@
             <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.read_to_edit_ratio) }}x</div>
             <div class="text-xs text-gray-400 mt-1">reads per edit</div>
             {% if effectiveness.read_to_edit_ratio > 8 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Add key exports/types to CLAUDE.md</div>
+            <div class="text-xs text-amber-600 mt-1">Tip: Add project structure to CLAUDE.md</div>
             {% endif %}
         </div>
     </div>
 
-    <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
-        <!-- Output Ratio -->
-        <div class="bg-white rounded-lg shadow p-4" title="output / (input + output), excludes cache">
-            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Output Ratio</h3>
-            <div class="text-2xl font-bold text-gray-900">{{ "{:.0%}".format(effectiveness.output_ratio) }}</div>
-            <div class="text-xs text-gray-400 mt-1">% of non-cache tokens that are output</div>
-            {% if effectiveness.output_ratio < 0.10 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Sessions may be mostly context loading</div>
-            {% endif %}
-        </div>
-
-        <!-- Tokens per User Msg -->
-        <div class="bg-white rounded-lg shadow p-4" title="(input + cache + output) / user_message_count">
-            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Tokens / Prompt</h3>
-            <div class="text-2xl font-bold text-gray-900">
-                {% if effectiveness.tokens_per_user_msg >= 1000000 %}{{ "{:.1f}M".format(effectiveness.tokens_per_user_msg / 1000000) }}{% elif effectiveness.tokens_per_user_msg >= 1000 %}{{ "{:.0f}K".format(effectiveness.tokens_per_user_msg / 1000) }}{% else %}{{ effectiveness.tokens_per_user_msg }}{% endif %}
-            </div>
-            <div class="text-xs text-gray-400 mt-1">avg context consumed per prompt</div>
-            {% if effectiveness.tokens_per_user_msg > 500000 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Consider shorter, focused sessions</div>
-            {% endif %}
-        </div>
-
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
         <!-- Turns per User Prompt -->
         <div class="bg-white rounded-lg shadow p-4" title="assistant_count / user_message_count">
             <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Turns / Prompt</h3>
             <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.turns_per_user_prompt) }}</div>
-            <div class="text-xs text-gray-400 mt-1">how agentic sessions are</div>
+            <div class="text-xs text-gray-400 mt-1">assistant turns per user message</div>
         </div>
 
         <!-- Tool Error Rate (with iteration context) -->
@@ -143,14 +121,11 @@
         </div>
         {% endif %}
 
-        <!-- Rework Rate -->
+        <!-- Iteration Rate -->
         <div class="bg-white rounded-lg shadow p-4" title="sessions with files edited 3+ times / total sessions">
-            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Rework Rate</h3>
+            <h3 class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Iteration Rate</h3>
             <div class="text-2xl font-bold {% if effectiveness.rework_rate > 0.5 %}text-amber-600{% else %}text-gray-900{% endif %}">{{ "{:.0%}".format(effectiveness.rework_rate) }}</div>
-            <div class="text-xs text-gray-400 mt-1">sessions with files edited 3+ times</div>
-            {% if effectiveness.rework_rate > 0.5 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Claude may need more context in CLAUDE.md</div>
-            {% endif %}
+            <div class="text-xs text-gray-400 mt-1">sessions with repeated file edits</div>
         </div>
     </div>
 
@@ -189,7 +164,7 @@
 
 <!-- Work Blocks Per Week -->
 <div class="bg-white rounded-lg shadow p-6 mb-6">
-    <h2 class="text-lg font-semibold text-gray-900 mb-4">Work Blocks Per Week</h2>
+    <h2 class="text-lg font-semibold text-gray-900 mb-4" title="A work block is a continuous coding period within a session. Sessions are split into blocks at 30-minute idle gaps.">Work Blocks Per Week</h2>
     <div style="height: 300px;">
         <canvas id="workBlocksPerWeekChart"></canvas>
     </div>

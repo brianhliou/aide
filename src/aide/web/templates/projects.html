@@ -33,10 +33,10 @@
                 </td>
                 {% if not subscription_user %}
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    ${{ "%.2f"|format(p.total_cost) }}
+                    {{ "${:,.2f}".format(p.total_cost) }}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    ${{ "%.2f"|format(p.avg_cost_per_session) }}
+                    {{ "${:,.2f}".format(p.avg_cost_per_session) }}
                 </td>
                 {% endif %}
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
