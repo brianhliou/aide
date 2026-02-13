@@ -6,7 +6,7 @@ aide ingests your Claude Code session logs and tells you what's happening: cost 
 
 ## Why
 
-The [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-developer-productivity/) found developers believe AI makes them 20% faster but were actually 19% slower. Without data, you're guessing. aide gives you the data.
+The [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/) found developers believe AI makes them 20% faster but were actually 19% slower. Without data, you're guessing. aide gives you the data.
 
 ## Screenshots
 

@@ -71,7 +71,7 @@ uv run aide ingest --full       # Rebuild database from scratch
 uv run aide serve               # Start dashboard at localhost:8787
 uv run aide stats               # Print summary to terminal
 uv run aide autopsy <id>        # Diagnose a specific session
-uv run pytest                   # Run all 192 tests
+uv run pytest                   # Run all tests
 uv run ruff check src/ tests/   # Lint
 ```
 
