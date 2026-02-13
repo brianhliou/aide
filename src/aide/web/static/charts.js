@@ -166,13 +166,14 @@ function createPieChart(canvasId, labels, data, options) {
     const type = (options && options.cutout) ? "doughnut" : "pie";
     const merged = {
         responsive: true,
-        maintainAspectRatio: false,
+        maintainAspectRatio: true,
+        aspectRatio: 1,
         plugins: {
             legend: {
                 position: "bottom",
                 labels: {
                     font: { size: 12, family: "system-ui, sans-serif" },
-                    padding: 16,
+                    padding: 12,
                 },
             },
             tooltip: CHART_DEFAULTS.plugins.tooltip,
@@ -190,7 +191,7 @@ function createPieChart(canvasId, labels, data, options) {
                 borderColor: "#fff",
             }],
         },
-        options: Object.assign(merged, options || {}),
+        options: deepMerge(merged, options || {}),
     });
 }
 

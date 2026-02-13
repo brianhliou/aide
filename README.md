@@ -6,12 +6,20 @@ aide ingests your Claude Code session logs and tells you what's happening: cost 
 
 ## Why
 
-The METR study found developers believe AI makes them 20% faster but were actually 19% slower. Without data, you're guessing. aide gives you the data.
+The [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-developer-productivity/) found developers believe AI makes them 20% faster but were actually 19% slower. Without data, you're guessing. aide gives you the data.
+
+## Screenshots
+
+![Overview — summary cards, effectiveness metrics, and trend charts](docs/screenshots/1-overview.png)
+
+![Session detail — token breakdown, tool usage, files touched](docs/screenshots/5-session-detail.png)
+
+![Insights — first-prompt analysis, time patterns, cost concentration](docs/screenshots/7-insights.png)
 
 ## Quick Start
 
 ```bash
-pip install aide-dashboard
+pip install aide-dashboard    # or: git clone + uv sync
 aide ingest                   # Parse your Claude Code logs into SQLite
 aide serve                    # Open the dashboard at localhost:8787
 aide autopsy <session-id>     # Diagnose a specific session
@@ -56,18 +64,13 @@ subscription_user: false
 
 All data stays on your machine. No telemetry, no cloud, no accounts. aide reads local log files and stores results in a local SQLite database.
 
-## Supported Tools
-
-- **Claude Code** (v1) — full support via JSONL session logs
-- **Cursor** (planned) — via local SQLite database
-
 ## Development
 
 ```bash
 git clone https://github.com/brianhliou/aide.git
 cd aide
 uv sync          # Install dependencies
-uv run pytest    # Run tests (192 tests)
+uv run pytest    # Run tests (357 tests)
 uv run aide serve   # Start dev server
 ```
 

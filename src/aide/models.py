@@ -70,8 +70,8 @@ class ParsedSession:
     """
 
     session_id: str
-    project_path: str  # e.g., "-Users-brianliou-projects-slopfarm"
-    project_name: str  # e.g., "slopfarm"
+    project_path: str  # e.g., "-Users-username-projects-myproject"
+    project_name: str  # e.g., "myproject"
     source_file: str  # path to the JSONL file
     started_at: datetime
     ended_at: datetime | None

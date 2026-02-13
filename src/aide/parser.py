@@ -475,7 +475,7 @@ def _parse_timestamp(ts: str) -> datetime:
 def _derive_project_name(project_path: str) -> str:
     """Derive a human-friendly project name from a Claude project directory name.
 
-    e.g. '-Users-brianliou-projects-slopfarm' -> 'slopfarm'
+    e.g. '-Users-username-projects-myproject' -> 'myproject'
     """
     marker = "-projects-"
     idx = project_path.rfind(marker)

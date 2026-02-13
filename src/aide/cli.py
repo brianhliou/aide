@@ -126,14 +126,13 @@ def serve(port: int | None):
     click.echo(f"Starting dashboard at http://localhost:{serve_port}")
     click.echo("Press Ctrl+C to stop.")
 
-    # Web server will be built in M2 — for now just confirm the command works
     try:
         from aide.web.app import create_app
 
         app = create_app(config)
-        app.run(host="localhost", port=serve_port, debug=True)
+        app.run(host="localhost", port=serve_port)
     except ImportError:
-        click.echo("Web dashboard not yet built (M2). Use 'aide stats' for now.")
+        click.echo("Web dashboard dependencies not found. Reinstall aide-dashboard.")
 
 
 @cli.command()
