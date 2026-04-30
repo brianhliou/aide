@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     session_count INTEGER,
     ingested_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+
+CREATE VIEW IF NOT EXISTS v_sessions_30d AS
+  SELECT * FROM sessions WHERE date(started_at) >= date('now', '-30 days');
+
+CREATE VIEW IF NOT EXISTS v_sessions_quarter AS
+  SELECT * FROM sessions WHERE date(started_at) >= date('now', '-90 days');
 """
 
 

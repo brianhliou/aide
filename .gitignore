@@ -45,3 +45,6 @@ htmlcov/
 tmp/
 temp/
 *.tmp
+
+# Personal query layer (kept out of the public repo — categorization is per-user)
+queries/
