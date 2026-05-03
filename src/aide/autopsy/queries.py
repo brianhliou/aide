@@ -7,16 +7,30 @@ from pathlib import Path
 from aide.db import get_connection
 
 
-def get_session(db_path: Path, session_id: str) -> dict | None:
+def get_session(
+    db_path: Path,
+    session_id: str,
+    provider: str | None = None,
+) -> dict | None:
     """Fetch a single session by session_id.
 
     Returns dict of session columns or None if not found.
     """
     con = get_connection(db_path)
     try:
-        row = con.execute(
-            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
-        ).fetchone()
+        if provider is None:
+            row = con.execute(
+                """SELECT * FROM sessions
+                WHERE session_id = ?
+                ORDER BY CASE WHEN provider = 'claude' THEN 0 ELSE 1 END
+                LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM sessions WHERE provider = ? AND session_id = ?",
+                (provider, session_id),
+            ).fetchone()
         if row is None:
             return None
         return dict(row)
@@ -24,47 +38,68 @@ def get_session(db_path: Path, session_id: str) -> dict | None:
         con.close()
 
 
-def get_session_messages(db_path: Path, session_id: str) -> list[dict]:
+def get_session_messages(
+    db_path: Path,
+    session_id: str,
+    provider: str = "claude",
+) -> list[dict]:
     """Fetch all messages for a session, ordered by timestamp."""
     con = get_connection(db_path)
     try:
         rows = con.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp",
-            (session_id,),
+            """SELECT * FROM messages
+            WHERE provider = ? AND session_id = ?
+            ORDER BY timestamp""",
+            (provider, session_id),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
 
 
-def get_session_tool_calls(db_path: Path, session_id: str) -> list[dict]:
+def get_session_tool_calls(
+    db_path: Path,
+    session_id: str,
+    provider: str = "claude",
+) -> list[dict]:
     """Fetch all tool calls for a session, ordered by timestamp."""
     con = get_connection(db_path)
     try:
         rows = con.execute(
-            "SELECT * FROM tool_calls WHERE session_id = ? ORDER BY timestamp",
-            (session_id,),
+            """SELECT * FROM tool_calls
+            WHERE provider = ? AND session_id = ?
+            ORDER BY timestamp""",
+            (provider, session_id),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
 
 
-def get_session_tool_usage(db_path: Path, session_id: str) -> list[dict]:
+def get_session_tool_usage(
+    db_path: Path,
+    session_id: str,
+    provider: str = "claude",
+) -> list[dict]:
     """Aggregate tool call counts for a session, sorted by count descending."""
     con = get_connection(db_path)
     try:
         rows = con.execute(
             "SELECT tool_name, COUNT(*) as count FROM tool_calls "
-            "WHERE session_id = ? GROUP BY tool_name ORDER BY count DESC",
-            (session_id,),
+            "WHERE provider = ? AND session_id = ? "
+            "GROUP BY tool_name ORDER BY count DESC",
+            (provider, session_id),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
 
 
-def get_session_files_touched(db_path: Path, session_id: str) -> list[dict]:
+def get_session_files_touched(
+    db_path: Path,
+    session_id: str,
+    provider: str = "claude",
+) -> list[dict]:
     """Aggregate file access patterns for a session.
 
     Categorizes tool calls by type:
@@ -86,10 +121,10 @@ def get_session_files_touched(db_path: Path, session_id: str) -> list[dict]:
                 SUM(CASE WHEN tool_name = 'Write' THEN 1 ELSE 0 END) AS write_count,
                 COUNT(*) AS total
             FROM tool_calls
-            WHERE session_id = ? AND file_path IS NOT NULL
+            WHERE provider = ? AND session_id = ? AND file_path IS NOT NULL
             GROUP BY file_path
             ORDER BY total DESC""",
-            (session_id,),
+            (provider, session_id),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:

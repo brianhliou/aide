@@ -54,6 +54,20 @@ uv run pytest
 uv run ruff check src/ tests/
 ```
 
+## Permission Friction Policy
+
+- Start Codex from the repo root, not from `~/projects`, so search and file tools
+  stay scoped to `aide`.
+- Before requesting escalation for `rg`, `find`, `perl`, `cp`, `sqlite3`, `node`,
+  browser automation, external services, or system tools, narrow the command to a
+  repo-relative path and retry without escalation when practical.
+- For repeated deterministic verification commands, request a reusable narrow
+  `prefix_rule` instead of one-off approval. Good candidates are:
+  `["uv", "run", "pytest"]`, `["uv", "run", "ruff"]`, and
+  `["just", "check"]`.
+- Do not request persistent approval for broad mutation, copy, search, network,
+  deploy, secret-bearing, or system-control commands. Keep those on-request.
+
 ## Architecture Rules
 
 - Claude data flow: `~/.claude/projects/**/*.jsonl` -> parser -> SQLite -> dashboard/autopsy.

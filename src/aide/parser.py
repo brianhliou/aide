@@ -16,8 +16,9 @@ except ImportError:
     def estimate_cost(
         input_tokens: int,
         output_tokens: int,
-        cache_read_tokens: int,
-        cache_creation_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        model: str | None = None,
     ) -> float:
         return (
             input_tokens * 3.0
@@ -357,9 +358,14 @@ def parse_jsonl_file(file_path: Path) -> list[ParsedSession]:
             b.duration_seconds for b in work_blocks
         )
 
-        cost = estimate_cost(
-            total_input, total_output, total_cache_read, total_cache_creation,
-        )
+        cost = round(sum(
+            estimate_cost(
+                m.input_tokens, m.output_tokens,
+                m.cache_read_tokens, m.cache_creation_tokens,
+                model=m.model,
+            )
+            for m in messages
+        ), 4)
 
         session = ParsedSession(
             session_id=session_id,

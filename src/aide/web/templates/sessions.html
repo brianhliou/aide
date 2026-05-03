@@ -4,13 +4,30 @@
 
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Sessions</h1>
+<p class="text-sm text-gray-600 mb-6">Local Claude and Codex conversations grouped by detected project. Active time excludes idle gaps between work blocks.</p>
+
+<div class="flex items-center gap-2 mb-6 text-sm">
+    <span class="text-gray-500">Provider</span>
+    <a href="{{ url_for('dashboard.sessions', project=project_filter) if project_filter else url_for('dashboard.sessions') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if not provider_filter else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        All
+    </a>
+    <a href="{{ url_for('dashboard.sessions', provider='claude', project=project_filter) if project_filter else url_for('dashboard.sessions', provider='claude') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'claude' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Claude
+    </a>
+    <a href="{{ url_for('dashboard.sessions', provider='codex', project=project_filter) if project_filter else url_for('dashboard.sessions', provider='codex') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'codex' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Codex
+    </a>
+</div>
 
 {% if project_filter %}
 <div class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-6 flex items-center justify-between">
     <span class="text-sm text-blue-800">
-        Showing sessions for <span class="font-semibold">{{ project_filter }}</span>
+        Showing sessions for <span class="font-semibold">{{ project_filter }}</span>{% if provider_filter %} from <span class="font-semibold">{{ provider_filter }}</span>{% endif %}
     </span>
-    <a href="/sessions" class="text-sm text-blue-600 hover:text-blue-800 font-medium">show all</a>
+    <a href="{{ url_for('dashboard.sessions', provider=provider_filter) if provider_filter else url_for('dashboard.sessions') }}" class="text-sm text-blue-600 hover:text-blue-800 font-medium">show all projects</a>
 </div>
 {% endif %}
 
@@ -18,9 +35,9 @@
     <table class="min-w-full divide-y divide-gray-200">
         <thead class="bg-gray-50">
             <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
-                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Session</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project / Provider</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Active work-block time; idle gaps are excluded">Active Time</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Messages</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tools</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Edits</th>
@@ -29,35 +46,32 @@
                 {% if not subscription_user %}
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
                 {% endif %}
-                <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Compacted</th>
+                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Signals</th>
             </tr>
         </thead>
         <tbody class="bg-white divide-y divide-gray-200">
             {% for s in sessions %}
             <tr class="hover:bg-gray-50 transition-colors">
                 <td class="px-6 py-4 whitespace-nowrap text-sm">
-                    <a href="/sessions/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 font-medium">
+                    <a href="/sessions/{{ s.provider }}/{{ s.session_id }}" class="text-blue-600 hover:text-blue-800 font-medium">
                         {% if s.custom_title %}
                         {{ s.custom_title }}
-                        <span class="text-gray-400 font-normal block text-xs">{{ s.started_at[:10] }} {{ s.started_at[11:16] }}</span>
                         {% else %}
-                        {{ s.started_at[:10] }}
-                        <span class="text-gray-400 font-normal">{{ s.started_at[11:16] }}</span>
+                        {{ s.session_id[:28] }}{% if s.session_id|length > 28 %}...{% endif %}
                         {% endif %}
+                        <span class="text-gray-400 font-normal block text-xs">{{ s.started_at[:10] }} {{ s.started_at[11:16] }}</span>
                     </a>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                    <a href="/sessions?project={{ s.project_name }}" class="hover:text-blue-600">{{ s.project_name }}</a>
+                    <a href="{{ url_for('dashboard.sessions', project=s.project_name, provider=provider_filter) if provider_filter else url_for('dashboard.sessions', project=s.project_name) }}" class="hover:text-blue-600">{{ s.project_name }}</a>
+                    <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{{ s.provider }}</span>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
-                    {% set dur = s.active_duration_seconds if s.active_duration_seconds else s.duration_seconds %}
+                    {% set dur = s.active_duration_seconds %}
                     {% if dur %}
                     {% set hours = dur // 3600 %}
                     {% set minutes = (dur % 3600) // 60 %}
                     {% if hours > 0 %}{{ hours }}h {{ minutes }}m{% else %}{{ minutes if minutes > 0 else 1 }}m{% endif %}
-                    {% if s.work_block_count and s.work_block_count > 1 %}
-                    <span class="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700" title="Session had {{ s.work_block_count }} separate coding blocks, split at 30-min idle gaps">{{ s.work_block_count }} blocks</span>
-                    {% endif %}
                     {% else %}&mdash;{% endif %}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">{{ s.message_count }}</td>
@@ -76,8 +90,24 @@
                     {{ "${:,.2f}".format(s.estimated_cost_usd) }}
                 </td>
                 {% endif %}
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
-                    {% if s.had_compaction %}<span class="text-amber-500" title="Context was compacted">*</span>{% endif %}
+                <td class="px-6 py-4 whitespace-nowrap text-sm">
+                    <div class="flex flex-wrap gap-1">
+                        {% if s.work_block_count and s.work_block_count > 1 %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700" title="Session had {{ s.work_block_count }} separate active work blocks">{{ s.work_block_count }} blocks</span>
+                        {% endif %}
+                        {% if s.had_compaction %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700">compacted</span>
+                        {% endif %}
+                        {% if s.tool_error_count > 0 %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-700">{{ s.tool_error_count }} errors</span>
+                        {% endif %}
+                        {% if s.edits == 0 and s.tool_call_count > 0 %}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">no edits</span>
+                        {% endif %}
+                        {% if not ((s.work_block_count and s.work_block_count > 1) or s.had_compaction or s.tool_error_count > 0 or (s.edits == 0 and s.tool_call_count > 0)) %}
+                        <span class="text-gray-400">&mdash;</span>
+                        {% endif %}
+                    </div>
                 </td>
             </tr>
             {% endfor %}

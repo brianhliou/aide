@@ -120,8 +120,8 @@ class TestParseSample2:
 
     def test_cost_estimate(self, sample2_jsonl):
         session = parse_jsonl_file(sample2_jsonl)[0]
-        # Cost module rounds to 4 decimal places
-        assert session.estimated_cost_usd == 0.0503
+        # Per-message cost summed and rounded to 4 decimal places
+        assert session.estimated_cost_usd == 0.0502
 
     def test_duration(self, sample2_jsonl):
         session = parse_jsonl_file(sample2_jsonl)[0]
@@ -219,7 +219,7 @@ class TestDiscoverJsonlFiles:
 
 class TestProjectNameDerivation:
     def test_standard_path(self):
-        assert _derive_project_name("-Users-brianliou-projects-slopfarm") == "slopfarm"
+        assert _derive_project_name("-Users-brianliou-projects-studioflow") == "studioflow"
 
     def test_nested_projects_marker(self):
         """Use the last -projects- occurrence."""

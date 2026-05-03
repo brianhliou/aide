@@ -2,7 +2,9 @@
 
 from pathlib import Path
 
-from aide.config import DEFAULTS, AideConfig, load_config
+import pytest
+
+from aide.config import DEFAULTS, AideConfig, LogSource, load_config
 
 
 def test_load_config_no_file(tmp_path):
@@ -11,6 +13,8 @@ def test_load_config_no_file(tmp_path):
     assert isinstance(config, AideConfig)
     assert config.subscription_user is False
     assert config.port == 8787
+    assert config.sources == [LogSource(provider="claude", path=config.log_dir)]
+    assert config.sources_configured is False
 
 
 def test_load_config_defaults_paths(tmp_path):
@@ -30,6 +34,7 @@ def test_load_config_partial_override(tmp_path):
     # Other defaults still apply
     assert config.subscription_user is False
     assert config.log_dir == Path(DEFAULTS["log_dir"]).expanduser()
+    assert config.sources == [LogSource(provider="claude", path=config.log_dir)]
 
 
 def test_load_config_subscription_user(tmp_path):
@@ -52,6 +57,7 @@ def test_load_config_custom_paths(tmp_path):
     config = load_config(config_path=config_file)
     assert config.log_dir == Path("~/my-logs").expanduser()
     assert config.db_path == Path("~/my-data/aide.db").expanduser()
+    assert config.sources == [LogSource(provider="claude", path=config.log_dir)]
     assert "~" not in str(config.log_dir)
     assert "~" not in str(config.db_path)
 
@@ -85,3 +91,47 @@ def test_load_config_empty_yaml(tmp_path):
     config = load_config(config_path=config_file)
     assert config.port == 8787
     assert config.subscription_user is False
+
+
+def test_load_config_sources_override_legacy_log_dirs(tmp_path):
+    """When sources exists, it defines ingestion sources."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "log_dir: ~/legacy-claude\n"
+        "codex_log_dir: ~/legacy-codex\n"
+        "sources:\n"
+        "  - provider: claude\n"
+        "    path: ~/claude-one\n"
+        "  - provider: codex\n"
+        "    path: ~/codex-one\n"
+    )
+
+    config = load_config(config_path=config_file)
+
+    assert config.log_dir == Path("~/legacy-claude").expanduser()
+    assert config.codex_log_dir == Path("~/legacy-codex").expanduser()
+    assert config.sources == [
+        LogSource(provider="claude", path=Path("~/claude-one").expanduser()),
+        LogSource(provider="codex", path=Path("~/codex-one").expanduser()),
+    ]
+    assert config.sources_configured is True
+
+
+def test_load_config_rejects_unknown_source_provider(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "sources:\n"
+        "  - provider: unknown\n"
+        "    path: ~/logs\n"
+    )
+
+    with pytest.raises(ValueError, match="unsupported"):
+        load_config(config_path=config_file)
+
+
+def test_load_config_rejects_malformed_sources(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("sources: nope\n")
+
+    with pytest.raises(ValueError, match="sources must be a list"):
+        load_config(config_path=config_file)

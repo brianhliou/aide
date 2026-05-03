@@ -104,26 +104,36 @@ uv run ruff check src/ tests/   # Lint
 
 ## Roadmap
 
-### Phase 1: Effectiveness Metrics
-The product differentiator. Without this, aide is just a cost dashboard.
+### Phase 1: Effectiveness Metrics - mostly shipped
+The original differentiator. Without this, aide is just a cost dashboard.
 
-1. **Effectiveness metrics on dashboard** — Cache hit rate trends, efficiency scores per session, compaction rate over time. Surface diagnostic insights on the overview page (not just the autopsy CLI). Add metrics directly; refactor into shared modules only when duplication becomes a real problem.
+1. **Effectiveness metrics on dashboard** - Cache hit rate trends, efficiency scores per session, compaction rate over time. Surface diagnostic insights on the overview page, not just the autopsy CLI.
 
-### Phase 2: Polish + Launch
-Ship it, get feedback, build the portfolio signal.
+### Phase 2: Provider Extensibility - current in-progress line
+Claude and Codex share the same product surface instead of becoming separate tools.
 
-2. Dashboard polish — responsive layout, date range selector, subscription badge
-3. README with screenshots
-4. PyPI packaging (`pip install aide-dashboard`)
-5. Blog post — METR study hook, personal findings
-6. Show HN
+2. Provider-qualified schema and ingestion for Claude + Codex
+3. Redaction, redacted backups, and redaction audit
+4. Provider-aware dashboard, autopsy, insights, and session detail pages
+5. Codex interpretation quality: investigation queue, residual error analysis, richer shell edit attribution, provider-specific metric notes
 
-### Phase 3: Per-Task Economics (post-launch)
+### Phase 3: Per-Task Economics
 Informed by the agent-session-economist exploration in project-planner. Build after launch, informed by real usage.
 
-7. **Task segmentation** — Segment sessions into tasks using heuristics: user message boundaries, temporal gaps, file clustering, git commit correlation. Start with the simplest heuristic and iterate.
-8. **Per-task cost attribution** — Which kinds of work (implementation, testing, debugging, exploration) cost the most.
-9. **Optimization recommendations** — Actionable spend reduction suggestions based on task-level patterns.
+6. **Task segmentation** - Segment sessions into tasks using heuristics: user message boundaries, temporal gaps, file clustering, git commit correlation.
+7. **Per-task cost attribution** - Which kinds of work (implementation, testing, debugging, exploration) cost the most.
+8. **Optimization recommendations** - Actionable spend reduction suggestions based on task-level patterns.
+
+### Phase 4: Semantic Compounding
+The new ladder. Ingestion/descriptive/diagnostic layers already exist; now aide should turn session history into durable artifacts that improve future Claude/Codex sessions.
+
+9. **Semantic artifact schema** - Store accepted high-signal artifacts above raw sessions: decisions, setup steps, credential steps, verification recipes, agent mistakes, risky actions, future-agent instructions, and planner signals.
+10. **Session digest** - `aide digest --session latest` proposes durable artifacts from a session for human review.
+11. **Artifact review queue** - human accept/edit/skip so aide does not automatically pollute future context.
+12. **Runbook generation** - `aide runbook generate --project <name>` writes Markdown runbooks for external setup, env vars, verification, future-agent warnings, and open risks.
+13. **Start-session brief** - `aide brief --project <name> --task "<task>"` generates a task-specific context packet before launching Claude/Codex.
+14. **Planner export** - write `~/.aide/planner-export.json` so project-planner reviews can use aide evidence.
+15. **Guard mode** - `aide guard check <command>` classifies risky actions using runbooks and accepted project artifacts.
 
 ### Evaluated and deferred
 - **Context Continuity Engine** — Auto-extract decisions/patterns from sessions and generate CLAUDE.md content. Deferred: requires LLM calls (breaks zero-cost principle), high platform risk (Anthropic shipping native Session Memory), different category (generation vs analysis). Heuristic parts already in autopsy suggestions.

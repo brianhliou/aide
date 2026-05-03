@@ -2,7 +2,7 @@
 
 > AI Developer Effectiveness tool. Track your AI coding productivity across all projects.
 
-aide ingests your Claude Code session logs and tells you what's happening: cost trends, token usage, session patterns, efficiency metrics, and actionable recommendations for improving your CLAUDE.md. The "Fitbit for AI coding."
+aide ingests your Claude Code and Codex session logs and tells you what's happening: cost trends, token usage, session patterns, efficiency metrics, and actionable recommendations for improving your agent instructions. The "Fitbit for AI coding."
 
 ## Why
 
@@ -21,6 +21,7 @@ The [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-d
 ```bash
 pip install aide-dashboard    # or: git clone + uv sync
 aide ingest                   # Parse your Claude Code logs into SQLite
+aide ingest --provider codex  # Parse your Codex logs into SQLite
 aide serve                    # Open the dashboard at localhost:8787
 aide autopsy <session-id>     # Diagnose a specific session
 ```
@@ -29,11 +30,13 @@ aide autopsy <session-id>     # Diagnose a specific session
 
 ```
 ~/.claude/projects/**/*.jsonl → parser → SQLite → aide
+~/.codex/sessions/**/*.jsonl  → Codex parser → SQLite → aide
 ```
 
-aide reads Claude Code's local session logs (JSONL), parses them into a SQLite database, and provides multiple ways to analyze them:
+aide reads local AI coding session logs (JSONL), parses them into a SQLite database, and provides multiple ways to analyze them:
 
 - **Dashboard** (`aide serve`) — Web UI showing cost trends, session browser, project comparisons, and tool usage patterns across all your sessions
+- **Data freshness** — Overview panel showing Claude/Codex session counts, latest session timestamps, tracked file counts, and last ingest timestamps
 - **Session diagnostics** (`aide autopsy <id>`) — Per-session Markdown report with cost breakdown by category, context window analysis, compaction detection, and CLAUDE.md improvement suggestions
 - **Quick stats** (`aide stats`) — Terminal summary of sessions, costs, and projects
 
@@ -42,8 +45,14 @@ Zero LLM calls. Zero cost to run. All data stays local.
 ## Commands
 
 ```bash
-aide ingest              # Parse new/changed logs
+aide ingest              # Parse configured sources (legacy config: Claude only)
+aide ingest --provider claude
+aide ingest --provider codex
 aide ingest --full       # Rebuild database from scratch
+aide ingest --archive-raw  # Also copy raw logs locally (sensitive; off by default)
+aide backup-redacted     # Write redacted log backups for configured sources
+aide redact-audit --strict  # Check redacted backups for likely sensitive leftovers
+aide jobs status         # Check launchd ingest/backup health
 aide serve               # Start dashboard at localhost:8787
 aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal
@@ -58,11 +67,30 @@ Optional config at `~/.config/aide/config.yaml`:
 # Set to true if you're on Claude Pro/Max subscription
 # Costs will show as "estimated equivalent at API rates"
 subscription_user: false
+
+# Optional: configure multiple providers. If omitted, aide uses
+# log_dir as a legacy Claude source.
+sources:
+  - provider: claude
+    path: ~/.claude/projects
+  - provider: codex
+    path: ~/.codex/sessions
 ```
 
 ## Data Privacy
 
-All data stays on your machine. No telemetry, no cloud, no accounts. aide reads local log files and stores results in a local SQLite database.
+All data stays on your machine. No telemetry, no cloud, no accounts. aide reads local log files and stores derived results in a local SQLite database. Raw log archiving is off by default because logs can contain prompts, file paths, tool output, and secrets.
+
+For routine backups, prefer redacted copies:
+
+```bash
+aide backup-redacted --out ~/.local/share/aide/redacted-logs
+aide redact-audit ~/.local/share/aide/redacted-logs --strict
+```
+
+This uses configured `sources`, writes provider-separated output, and prints counts
+only. `redact-audit` reports finding categories and JSON field paths only; it does
+not print matched log values.
 
 ## Development
 

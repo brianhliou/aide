@@ -5,6 +5,66 @@
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Overview</h1>
 
+<div class="flex items-center gap-2 mb-6 text-sm">
+    <span class="text-gray-500">Provider</span>
+    <a href="{{ url_for('dashboard.overview') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if not provider_filter else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        All
+    </a>
+    <a href="{{ url_for('dashboard.overview', provider='claude') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'claude' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Claude
+    </a>
+    <a href="{{ url_for('dashboard.overview', provider='codex') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'codex' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Codex
+    </a>
+</div>
+
+<!-- Data Freshness -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Data Freshness</h2>
+        <span class="text-xs text-gray-500">Provider log coverage</span>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+            <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-gray-500 border-b">
+                    <th class="py-2 pr-4 font-medium">Provider</th>
+                    <th class="py-2 pr-4 font-medium text-right">Sessions</th>
+                    <th class="py-2 pr-4 font-medium">Latest Session</th>
+                    <th class="py-2 pr-4 font-medium text-right">Tracked Files</th>
+                    <th class="py-2 pr-4 font-medium">Latest File Seen</th>
+                    <th class="py-2 font-medium">Last Ingest</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100">
+                {% for row in data_freshness %}
+                <tr>
+                    <td class="py-3 pr-4">
+                        <span class="inline-flex items-center px-2 py-1 rounded text-xs font-medium {{ 'bg-blue-100 text-blue-700' if row.provider == 'claude' else 'bg-emerald-100 text-emerald-700' }}">
+                            {{ row.provider }}
+                        </span>
+                    </td>
+                    <td class="py-3 pr-4 text-right font-medium text-gray-900">{{ row.session_count }}</td>
+                    <td class="py-3 pr-4 text-gray-700">
+                        {{ row.latest_session_at[:19].replace('T', ' ') if row.latest_session_at else 'No sessions' }}
+                    </td>
+                    <td class="py-3 pr-4 text-right text-gray-700">{{ row.ingested_file_count }}</td>
+                    <td class="py-3 pr-4 text-gray-700">
+                        {{ row.latest_file_mtime[:19].replace('T', ' ') if row.latest_file_mtime else 'No files tracked' }}
+                    </td>
+                    <td class="py-3 text-gray-700">
+                        {{ row.latest_file_ingested_at[:19].replace('T', ' ') if row.latest_file_ingested_at else row.latest_session_ingested_at[:19].replace('T', ' ') if row.latest_session_ingested_at else 'Never' }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
 <!-- Summary Cards -->
 <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
     <!-- Last 30 Days -->
@@ -87,7 +147,7 @@
             <div class="text-2xl font-bold text-gray-900">{{ "{:.1f}".format(effectiveness.read_to_edit_ratio) }}x</div>
             <div class="text-xs text-gray-400 mt-1">reads per edit</div>
             {% if effectiveness.read_to_edit_ratio > 8 and effectiveness.session_count > 0 %}
-            <div class="text-xs text-amber-600 mt-1">Tip: Add project structure to CLAUDE.md</div>
+            <div class="text-xs text-amber-600 mt-1">Tip: Add project structure to {{ "AGENTS.md" if provider_filter == "codex" else "CLAUDE.md" if provider_filter == "claude" else "project instructions" }}</div>
             {% endif %}
         </div>
     </div>

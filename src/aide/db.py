@@ -10,7 +10,8 @@ from aide.models import ParsedSession
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL DEFAULT 'claude',
+    session_id TEXT NOT NULL,
     project_path TEXT NOT NULL,
     project_name TEXT NOT NULL,
     started_at TEXT NOT NULL,
@@ -44,11 +45,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     permission_mode TEXT,
     active_duration_seconds INTEGER DEFAULT 0,
     source_file TEXT NOT NULL,
-    ingested_at TEXT DEFAULT (datetime('now'))
+    ingested_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(provider, session_id)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL DEFAULT 'claude',
     session_id TEXT NOT NULL,
     message_uuid TEXT NOT NULL,
     parent_uuid TEXT,
@@ -65,11 +68,12 @@ CREATE TABLE IF NOT EXISTS messages (
     model TEXT,
     stop_reason TEXT,
     prompt_length INTEGER DEFAULT 0,
-    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+    FOREIGN KEY (provider, session_id) REFERENCES sessions(provider, session_id)
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL DEFAULT 'claude',
     session_id TEXT NOT NULL,
     message_uuid TEXT NOT NULL,
     tool_name TEXT NOT NULL,
@@ -81,19 +85,20 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     is_error INTEGER DEFAULT 0,
     old_string_len INTEGER,
     new_string_len INTEGER,
-    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+    FOREIGN KEY (provider, session_id) REFERENCES sessions(provider, session_id)
 );
 
 CREATE TABLE IF NOT EXISTS work_blocks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL DEFAULT 'claude',
     session_id TEXT NOT NULL,
     block_index INTEGER NOT NULL,
     started_at TEXT NOT NULL,
     ended_at TEXT NOT NULL,
     duration_seconds INTEGER NOT NULL,
     message_count INTEGER NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES sessions(session_id),
-    UNIQUE(session_id, block_index)
+    FOREIGN KEY (provider, session_id) REFERENCES sessions(provider, session_id),
+    UNIQUE(provider, session_id, block_index)
 );
 
 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -111,17 +116,19 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 
 CREATE TABLE IF NOT EXISTS ingest_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_file TEXT NOT NULL UNIQUE,
+    provider TEXT NOT NULL DEFAULT 'claude',
+    source_file TEXT NOT NULL,
     file_size INTEGER,
     file_mtime REAL,
     session_count INTEGER,
-    ingested_at TEXT DEFAULT (datetime('now'))
+    ingested_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(provider, source_file)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(provider, session_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(provider, session_id);
 
 CREATE VIEW IF NOT EXISTS v_sessions_30d AS
   SELECT * FROM sessions WHERE date(started_at) >= date('now', '-30 days');
@@ -149,6 +156,7 @@ def _migrate_db(db_path: Path) -> None:
         # --- sessions table ---
         session_cols = {row[1] for row in con.execute("PRAGMA table_info(sessions)").fetchall()}
         session_migrations = {
+            "provider": "TEXT NOT NULL DEFAULT 'claude'",
             "compaction_count": "INTEGER DEFAULT 0",
             "peak_context_tokens": "INTEGER DEFAULT 0",
             "custom_title": "TEXT",
@@ -172,6 +180,7 @@ def _migrate_db(db_path: Path) -> None:
         msg_cols_rows = con.execute("PRAGMA table_info(messages)").fetchall()
         msg_cols = {row[1] for row in msg_cols_rows}
         msg_migrations = {
+            "provider": "TEXT NOT NULL DEFAULT 'claude'",
             "model": "TEXT",
             "stop_reason": "TEXT",
             "prompt_length": "INTEGER DEFAULT 0",
@@ -185,6 +194,7 @@ def _migrate_db(db_path: Path) -> None:
         tc_cols_rows = con.execute("PRAGMA table_info(tool_calls)").fetchall()
         tc_cols = {row[1] for row in tc_cols_rows}
         tc_migrations = {
+            "provider": "TEXT NOT NULL DEFAULT 'claude'",
             "tool_use_id": "TEXT",
             "command": "TEXT",
             "description": "TEXT",
@@ -197,9 +207,178 @@ def _migrate_db(db_path: Path) -> None:
                 if col not in tc_cols:
                     con.execute(f"ALTER TABLE tool_calls ADD COLUMN {col} {col_type}")
 
+        # --- work_blocks table (may not exist in old schemas) ---
+        wb_cols_rows = con.execute("PRAGMA table_info(work_blocks)").fetchall()
+        wb_cols = {row[1] for row in wb_cols_rows}
+        if wb_cols_rows and "provider" not in wb_cols:
+            con.execute(
+                "ALTER TABLE work_blocks ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'"
+            )
+
+        # --- ingest_log table ---
+        ingest_cols_rows = con.execute("PRAGMA table_info(ingest_log)").fetchall()
+        ingest_cols = {row[1] for row in ingest_cols_rows}
+        if ingest_cols_rows and "provider" not in ingest_cols:
+            con.execute(
+                "ALTER TABLE ingest_log ADD COLUMN provider TEXT NOT NULL DEFAULT 'claude'"
+            )
+
+        _ensure_provider_identity_constraints(con)
+
         con.commit()
     finally:
         con.close()
+
+
+def _ensure_provider_identity_constraints(con: sqlite3.Connection) -> None:
+    """Rebuild old unique constraints so provider-qualified IDs can coexist."""
+    con.execute("DROP VIEW IF EXISTS v_sessions_30d")
+    con.execute("DROP VIEW IF EXISTS v_sessions_quarter")
+
+    if _table_exists(con, "sessions") and not _has_unique_index(
+        con, "sessions", ("provider", "session_id")
+    ):
+        _rebuild_table(
+            con,
+            "sessions",
+            """CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL DEFAULT 'claude',
+                session_id TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                duration_seconds INTEGER,
+                total_input_tokens INTEGER DEFAULT 0,
+                total_output_tokens INTEGER DEFAULT 0,
+                total_cache_read_tokens INTEGER DEFAULT 0,
+                total_cache_creation_tokens INTEGER DEFAULT 0,
+                estimated_cost_usd REAL,
+                message_count INTEGER DEFAULT 0,
+                user_message_count INTEGER DEFAULT 0,
+                assistant_message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                file_read_count INTEGER DEFAULT 0,
+                file_write_count INTEGER DEFAULT 0,
+                file_edit_count INTEGER DEFAULT 0,
+                bash_count INTEGER DEFAULT 0,
+                compaction_count INTEGER DEFAULT 0,
+                peak_context_tokens INTEGER DEFAULT 0,
+                custom_title TEXT,
+                total_turn_duration_ms INTEGER DEFAULT 0,
+                turn_count INTEGER DEFAULT 0,
+                max_turn_duration_ms INTEGER DEFAULT 0,
+                tool_error_count INTEGER DEFAULT 0,
+                git_branch TEXT,
+                rework_file_count INTEGER DEFAULT 0,
+                test_after_edit_rate REAL DEFAULT 0.0,
+                total_thinking_chars INTEGER DEFAULT 0,
+                thinking_message_count INTEGER DEFAULT 0,
+                permission_mode TEXT,
+                active_duration_seconds INTEGER DEFAULT 0,
+                source_file TEXT NOT NULL,
+                ingested_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(provider, session_id)
+            )""",
+        )
+
+    if _table_exists(con, "work_blocks") and not _has_unique_index(
+        con, "work_blocks", ("provider", "session_id", "block_index")
+    ):
+        _rebuild_table(
+            con,
+            "work_blocks",
+            """CREATE TABLE work_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL DEFAULT 'claude',
+                session_id TEXT NOT NULL,
+                block_index INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL,
+                message_count INTEGER NOT NULL,
+                FOREIGN KEY (provider, session_id) REFERENCES sessions(provider, session_id),
+                UNIQUE(provider, session_id, block_index)
+            )""",
+        )
+
+    if _table_exists(con, "ingest_log") and not _has_unique_index(
+        con, "ingest_log", ("provider", "source_file")
+    ):
+        _rebuild_table(
+            con,
+            "ingest_log",
+            """CREATE TABLE ingest_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL DEFAULT 'claude',
+                source_file TEXT NOT NULL,
+                file_size INTEGER,
+                file_mtime REAL,
+                session_count INTEGER,
+                ingested_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(provider, source_file)
+            )""",
+        )
+
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name)")
+    if _table_exists(con, "messages"):
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(provider, session_id)"
+        )
+    if _table_exists(con, "tool_calls"):
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_session "
+            "ON tool_calls(provider, session_id)"
+        )
+    con.execute(
+        """CREATE VIEW IF NOT EXISTS v_sessions_30d AS
+        SELECT * FROM sessions WHERE date(started_at) >= date('now', '-30 days')"""
+    )
+    con.execute(
+        """CREATE VIEW IF NOT EXISTS v_sessions_quarter AS
+        SELECT * FROM sessions WHERE date(started_at) >= date('now', '-90 days')"""
+    )
+
+
+def _rebuild_table(con: sqlite3.Connection, table: str, create_sql: str) -> None:
+    old_table = f"{table}__old_provider_migration"
+    con.execute(f"ALTER TABLE {table} RENAME TO {old_table}")
+    con.execute(create_sql)
+    old_cols = _table_columns(con, old_table)
+    new_cols = _table_columns(con, table)
+    copy_cols = [col for col in new_cols if col in old_cols]
+    col_list = ", ".join(copy_cols)
+    con.execute(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM {old_table}")
+    con.execute(f"DROP TABLE {old_table}")
+
+
+def _table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
+
+
+def _table_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [row[1] for row in con.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _has_unique_index(
+    con: sqlite3.Connection,
+    table: str,
+    columns: tuple[str, ...],
+) -> bool:
+    for index in con.execute(f"PRAGMA index_list({table})").fetchall():
+        if not index[2]:
+            continue
+        indexed_cols = tuple(
+            row[2] for row in con.execute(f"PRAGMA index_info({index[1]})").fetchall()
+        )
+        if indexed_cols == columns:
+            return True
+    return False
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
@@ -212,25 +391,31 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
     """Insert parsed sessions into the database.
 
-    Uses INSERT OR REPLACE on session_id. Also inserts messages and tool_calls.
+    Uses INSERT OR REPLACE on (provider, session_id). Also inserts messages and tool_calls.
     Returns count of sessions ingested.
     """
     con = get_connection(db_path)
     try:
         for s in sessions:
+            provider = s.provider or "claude"
             # Delete existing child rows for re-ingestion
-            con.execute("DELETE FROM messages WHERE session_id = ?", (s.session_id,))
             con.execute(
-                "DELETE FROM tool_calls WHERE session_id = ?", (s.session_id,)
+                "DELETE FROM messages WHERE provider = ? AND session_id = ?",
+                (provider, s.session_id),
             )
             con.execute(
-                "DELETE FROM work_blocks WHERE session_id = ?", (s.session_id,)
+                "DELETE FROM tool_calls WHERE provider = ? AND session_id = ?",
+                (provider, s.session_id),
+            )
+            con.execute(
+                "DELETE FROM work_blocks WHERE provider = ? AND session_id = ?",
+                (provider, s.session_id),
             )
 
             # Upsert session
             con.execute(
                 """INSERT OR REPLACE INTO sessions (
-                    session_id, project_path, project_name, started_at, ended_at,
+                    provider, session_id, project_path, project_name, started_at, ended_at,
                     duration_seconds, total_input_tokens, total_output_tokens,
                     total_cache_read_tokens, total_cache_creation_tokens,
                     estimated_cost_usd, message_count, user_message_count,
@@ -247,9 +432,10 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?
+                    ?, ?, ?, ?, ?
                 )""",
                 (
+                    provider,
                     s.session_id,
                     s.project_path,
                     s.project_name,
@@ -296,13 +482,14 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                 )
                 con.execute(
                     """INSERT INTO messages (
-                        session_id, message_uuid, parent_uuid, role, type,
+                        provider, session_id, message_uuid, parent_uuid, role, type,
                         timestamp, input_tokens, output_tokens,
                         cache_read_tokens, cache_creation_tokens,
                         content_length, has_tool_use, tool_names,
                         model, stop_reason, prompt_length
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
+                        provider,
                         s.session_id,
                         m.uuid,
                         m.parent_uuid,
@@ -326,11 +513,12 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
                 for tc in m.tool_calls:
                     con.execute(
                         """INSERT INTO tool_calls (
-                            session_id, message_uuid, tool_name, file_path, timestamp,
+                            provider, session_id, message_uuid, tool_name, file_path, timestamp,
                             tool_use_id, command, description, is_error,
                             old_string_len, new_string_len
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
+                            provider,
                             s.session_id,
                             m.uuid,
                             tc.tool_name,
@@ -349,10 +537,11 @@ def ingest_sessions(db_path: Path, sessions: list[ParsedSession]) -> int:
             for wb in s.work_blocks:
                 con.execute(
                     """INSERT INTO work_blocks (
-                        session_id, block_index, started_at, ended_at,
+                        provider, session_id, block_index, started_at, ended_at,
                         duration_seconds, message_count
-                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (
+                        provider,
                         s.session_id,
                         wb.block_index,
                         wb.started_at.isoformat(),
@@ -433,22 +622,27 @@ def log_ingestion(
     file_size: int,
     file_mtime: float,
     session_count: int,
+    provider: str = "claude",
 ) -> None:
-    """Record a file in the ingest_log. INSERT OR REPLACE on source_file."""
+    """Record a file in the ingest_log. INSERT OR REPLACE on provider/source_file."""
     con = get_connection(db_path)
     try:
         con.execute(
             """INSERT OR REPLACE INTO ingest_log
-                (source_file, file_size, file_mtime, session_count)
-            VALUES (?, ?, ?, ?)""",
-            (source_file, file_size, file_mtime, session_count),
+                (provider, source_file, file_size, file_mtime, session_count)
+            VALUES (?, ?, ?, ?, ?)""",
+            (provider, source_file, file_size, file_mtime, session_count),
         )
         con.commit()
     finally:
         con.close()
 
 
-def get_ingested_file(db_path: Path, source_file: str) -> dict | None:
+def get_ingested_file(
+    db_path: Path,
+    source_file: str,
+    provider: str = "claude",
+) -> dict | None:
     """Check if a file has been ingested.
 
     Returns {source_file, file_size, file_mtime} or None.
@@ -456,8 +650,10 @@ def get_ingested_file(db_path: Path, source_file: str) -> dict | None:
     con = get_connection(db_path)
     try:
         row = con.execute(
-            "SELECT source_file, file_size, file_mtime FROM ingest_log WHERE source_file = ?",
-            (source_file,),
+            """SELECT provider, source_file, file_size, file_mtime
+            FROM ingest_log
+            WHERE provider = ? AND source_file = ?""",
+            (provider, source_file),
         ).fetchone()
         if row is None:
             return None

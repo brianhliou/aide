@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from aide.config import AideConfig
-from aide.db import ingest_sessions, init_db, rebuild_daily_stats
+from aide.db import ingest_sessions, init_db, log_ingestion, rebuild_daily_stats
 from aide.models import ParsedMessage, ParsedSession, ToolCall, WorkBlock
 from aide.web import queries
 from aide.web.app import create_app
@@ -19,6 +19,7 @@ from aide.web.app import create_app
 def _make_test_session(
     session_id="test-sess-1",
     project_name="test-project",
+    provider="claude",
     cost=5.0,
     days_ago=0,
     input_tokens=1000,
@@ -47,6 +48,7 @@ def _make_test_session(
     )
     ended = now + timedelta(minutes=45)
     return ParsedSession(
+        provider=provider,
         session_id=session_id,
         project_path=f"-Users-test-{project_name}",
         project_name=project_name,
@@ -100,6 +102,14 @@ def _seed_db(db_path):
         days_ago=2,
     )
     ingest_sessions(db_path, [s1, s2])
+    log_ingestion(
+        db_path,
+        "/fake/sess-alpha-1.jsonl",
+        file_size=100,
+        file_mtime=s1.started_at.timestamp(),
+        session_count=1,
+        provider="claude",
+    )
     rebuild_daily_stats(db_path)
 
 
@@ -124,6 +134,55 @@ def seeded_db(tmp_path):
     db_path = tmp_path / "test-aide.db"
     _seed_db(db_path)
     return db_path
+
+
+@pytest.fixture
+def mixed_provider_db(tmp_path):
+    """A temporary database with Claude and Codex sessions."""
+    db_path = tmp_path / "test-aide-mixed.db"
+    init_db(db_path)
+    claude = _make_test_session(
+        session_id="mixed-claude-1",
+        project_name="alpha",
+        provider="claude",
+        cost=3.50,
+    )
+    codex = _make_test_session(
+        session_id="mixed-codex-1",
+        project_name="beta",
+        provider="codex",
+        cost=7.25,
+        days_ago=1,
+    )
+    ingest_sessions(db_path, [claude, codex])
+    log_ingestion(
+        db_path,
+        "/fake/mixed-claude-1.jsonl",
+        file_size=100,
+        file_mtime=claude.started_at.timestamp(),
+        session_count=1,
+        provider="claude",
+    )
+    log_ingestion(
+        db_path,
+        "/fake/mixed-codex-1.jsonl",
+        file_size=100,
+        file_mtime=codex.started_at.timestamp(),
+        session_count=1,
+        provider="codex",
+    )
+    rebuild_daily_stats(db_path)
+    return db_path
+
+
+@pytest.fixture
+def mixed_provider_client(mixed_provider_db):
+    """Flask test client backed by mixed-provider data."""
+    config = _make_config(mixed_provider_db)
+    app = create_app(config)
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
 
 
 @pytest.fixture
@@ -212,6 +271,15 @@ class TestRoutes:
         assert b"This Week" in resp.data
         assert b"Today" in resp.data
 
+    def test_overview_contains_data_freshness_panel(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/")
+        assert b"Data Freshness" in resp.data
+        assert b"Provider log coverage" in resp.data
+        assert b"Latest Session" in resp.data
+        assert b"Tracked Files" in resp.data
+        assert b"claude" in resp.data
+        assert b"codex" in resp.data
+
     def test_overview_contains_effectiveness_heading(self, client):
         resp = client.get("/")
         assert b"Effectiveness" in resp.data
@@ -233,6 +301,13 @@ class TestRoutes:
         assert b"Cost By Project" in resp.data
         assert b"Token Breakdown" in resp.data
 
+    def test_overview_provider_filter(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/?provider=codex")
+        assert resp.status_code == 200
+        assert b"Codex" in resp.data
+        assert b"beta" in resp.data
+        assert b"alpha" not in resp.data
+
     def test_projects_returns_200(self, client):
         resp = client.get("/projects")
         assert resp.status_code == 200
@@ -248,6 +323,13 @@ class TestRoutes:
         assert b"Sessions" in resp.data
         assert b"Total Cost" in resp.data
 
+    def test_projects_provider_filter(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/projects?provider=codex")
+        assert resp.status_code == 200
+        assert b"beta" in resp.data
+        assert b"alpha" not in resp.data
+        assert b"Provider" in resp.data
+
     def test_sessions_returns_200(self, client):
         resp = client.get("/sessions")
         assert resp.status_code == 200
@@ -259,9 +341,18 @@ class TestRoutes:
 
     def test_sessions_contains_table_headers(self, client):
         resp = client.get("/sessions")
-        assert b"Date" in resp.data
-        assert b"Project" in resp.data
+        assert b"Session" in resp.data
+        assert b"Project / Provider" in resp.data
+        assert b"Active Time" in resp.data
+        assert b"Signals" in resp.data
         assert b"Cost" in resp.data
+
+    def test_sessions_provider_filter(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/sessions?provider=codex")
+        assert resp.status_code == 200
+        assert b"mixed-codex-1" in resp.data
+        assert b"mixed-claude-1" not in resp.data
+        assert b"Codex" in resp.data
 
     def test_session_detail_returns_200(self, client):
         resp = client.get("/sessions/sess-alpha-1")
@@ -286,6 +377,11 @@ class TestRoutes:
         assert b"Input" in resp.data
         assert b"Output" in resp.data
 
+    def test_provider_qualified_session_detail_returns_200(self, client):
+        resp = client.get("/sessions/claude/sess-alpha-1")
+        assert resp.status_code == 200
+        assert b"claude" in resp.data
+
     def test_tools_returns_200(self, client):
         resp = client.get("/tools")
         assert resp.status_code == 200
@@ -298,6 +394,12 @@ class TestRoutes:
     def test_tools_contains_top_files_heading(self, client):
         resp = client.get("/tools")
         assert b"Most Accessed Files" in resp.data
+
+    def test_tools_provider_filter(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/tools?provider=codex")
+        assert resp.status_code == 200
+        assert b"Codex" in resp.data
+        assert b"Tool Usage" in resp.data
 
 
 # ===========================================================================
@@ -357,6 +459,9 @@ class TestEmptyDatabase:
         resp = empty_client.get("/")
         assert resp.status_code == 200
         assert b"Effectiveness" in resp.data
+        assert b"Data Freshness" in resp.data
+        assert b"No sessions" in resp.data
+        assert b"No files tracked" in resp.data
 
     def test_projects_empty(self, empty_client):
         resp = empty_client.get("/projects")
@@ -435,6 +540,56 @@ class TestQueryOverviewSummary:
         assert result["last_30d"]["cost"] == 0
         assert result["today"]["sessions"] == 0
 
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_overview_summary(mixed_provider_db, provider="codex")
+        assert result["last_30d"]["sessions"] == 1
+        assert result["last_30d"]["cost"] == 7.25
+
+
+class TestQueryDataFreshness:
+    """Tests for get_data_freshness."""
+
+    def test_returns_provider_rows(self, mixed_provider_db):
+        result = queries.get_data_freshness(mixed_provider_db)
+
+        assert [row["provider"] for row in result] == ["claude", "codex"]
+
+    def test_counts_sessions_and_ingested_files_by_provider(self, mixed_provider_db):
+        result = queries.get_data_freshness(mixed_provider_db)
+        by_provider = {row["provider"]: row for row in result}
+
+        assert by_provider["claude"]["session_count"] == 1
+        assert by_provider["claude"]["ingested_file_count"] == 1
+        assert by_provider["claude"]["latest_session_at"]
+        assert by_provider["claude"]["latest_file_mtime"]
+        assert by_provider["claude"]["latest_file_ingested_at"]
+        assert by_provider["codex"]["session_count"] == 1
+        assert by_provider["codex"]["ingested_file_count"] == 1
+
+    def test_empty_db_returns_zero_rows_for_known_providers(self, empty_db):
+        result = queries.get_data_freshness(empty_db)
+
+        assert result == [
+            {
+                "provider": "claude",
+                "session_count": 0,
+                "latest_session_at": None,
+                "latest_session_ingested_at": None,
+                "ingested_file_count": 0,
+                "latest_file_mtime": None,
+                "latest_file_ingested_at": None,
+            },
+            {
+                "provider": "codex",
+                "session_count": 0,
+                "latest_session_at": None,
+                "latest_session_ingested_at": None,
+                "ingested_file_count": 0,
+                "latest_file_mtime": None,
+                "latest_file_ingested_at": None,
+            },
+        ]
+
 
 class TestQueryDailyCostSeries:
     """Tests for get_daily_cost_series."""
@@ -502,6 +657,10 @@ class TestQueryCostByProject:
         result = queries.get_cost_by_project(empty_db)
         assert result == []
 
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_cost_by_project(mixed_provider_db, provider="codex")
+        assert result == [{"project_name": "beta", "total_cost": 7.25}]
+
 
 class TestQueryTokenBreakdown:
     """Tests for get_token_breakdown."""
@@ -528,6 +687,15 @@ class TestQueryTokenBreakdown:
         assert result["cache_read"] == 0
         assert result["cache_creation"] == 0
 
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_token_breakdown(mixed_provider_db, provider="codex")
+        assert result == {
+            "input": 1000,
+            "output": 500,
+            "cache_read": 200,
+            "cache_creation": 100,
+        }
+
 
 class TestQueryProjectsTable:
     """Tests for get_projects_table."""
@@ -544,6 +712,7 @@ class TestQueryProjectsTable:
         assert "total_cost" in item
         assert "avg_cost_per_session" in item
         assert "total_duration_seconds" in item
+        assert "avg_active_duration_seconds" in item
         assert "total_tokens" in item
 
     def test_session_count_per_project(self, seeded_db):
@@ -551,6 +720,24 @@ class TestQueryProjectsTable:
         by_name = {r["project_name"]: r for r in result}
         assert by_name["alpha"]["session_count"] == 1
         assert by_name["beta"]["session_count"] == 1
+
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_projects_table(mixed_provider_db, provider="codex")
+        assert [r["project_name"] for r in result] == ["beta"]
+
+    def test_uses_active_duration_not_wall_clock_duration(self, tmp_path):
+        db_path = tmp_path / "projects.db"
+        init_db(db_path)
+        session = _make_test_session(session_id="long-wall", project_name="alpha")
+        session.duration_seconds = 365 * 24 * 3600
+        session.active_duration_seconds = 1800
+        session.work_blocks[0].duration_seconds = 1800
+        ingest_sessions(db_path, [session])
+
+        result = queries.get_projects_table(db_path)
+
+        assert result[0]["total_duration_seconds"] == 1800
+        assert result[0]["avg_active_duration_seconds"] == 1800
 
     def test_empty_db_returns_empty_list(self, empty_db):
         result = queries.get_projects_table(empty_db)
@@ -568,6 +755,7 @@ class TestQuerySessionScatterData:
         result = queries.get_session_scatter_data(seeded_db)
         item = result[0]
         assert "session_id" in item
+        assert "provider" in item
         assert "project_name" in item
         assert "estimated_cost_usd" in item
         assert "started_at" in item
@@ -576,6 +764,10 @@ class TestQuerySessionScatterData:
         result = queries.get_session_scatter_data(seeded_db)
         ids = {r["session_id"] for r in result}
         assert ids == {"sess-alpha-1", "sess-beta-1"}
+
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_session_scatter_data(mixed_provider_db, provider="codex")
+        assert [r["session_id"] for r in result] == ["mixed-codex-1"]
 
     def test_empty_db_returns_empty_list(self, empty_db):
         result = queries.get_session_scatter_data(empty_db)
@@ -593,6 +785,7 @@ class TestQuerySessionsList:
         result = queries.get_sessions_list(seeded_db)
         item = result[0]
         assert "session_id" in item
+        assert "provider" in item
         assert "project_name" in item
         assert "started_at" in item
         assert "duration_seconds" in item
@@ -606,6 +799,18 @@ class TestQuerySessionsList:
         result = queries.get_sessions_list(seeded_db, project_name="alpha")
         assert len(result) == 1
         assert result[0]["session_id"] == "sess-alpha-1"
+
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_sessions_list(mixed_provider_db, provider="codex")
+        assert [r["session_id"] for r in result] == ["mixed-codex-1"]
+
+    def test_filter_by_project_and_provider(self, mixed_provider_db):
+        result = queries.get_sessions_list(
+            mixed_provider_db,
+            project_name="alpha",
+            provider="codex",
+        )
+        assert result == []
 
     def test_filter_nonexistent_project(self, seeded_db):
         result = queries.get_sessions_list(seeded_db, project_name="nonexistent")
@@ -636,8 +841,28 @@ class TestQuerySessionDetail:
     def test_contains_session_fields(self, seeded_db):
         result = queries.get_session_detail(seeded_db, "sess-alpha-1")
         assert result["session_id"] == "sess-alpha-1"
+        assert result["provider"] == "claude"
         assert result["project_name"] == "alpha"
         assert abs(result["estimated_cost_usd"] - 3.50) < 1e-9
+
+    def test_provider_qualified_lookup_disambiguates_session_id(self, tmp_path):
+        db_path = tmp_path / "providers.db"
+        init_db(db_path)
+        claude = _make_test_session(
+            session_id="shared-id",
+            project_name="claude-project",
+        )
+        codex = _make_test_session(
+            session_id="shared-id",
+            project_name="codex-project",
+        )
+        codex.provider = "codex"
+        ingest_sessions(db_path, [claude, codex])
+
+        result = queries.get_session_detail(db_path, "shared-id", provider="codex")
+
+        assert result["provider"] == "codex"
+        assert result["project_name"] == "codex-project"
 
     def test_contains_tool_usage(self, seeded_db):
         result = queries.get_session_detail(seeded_db, "sess-alpha-1")
@@ -665,6 +890,45 @@ class TestQuerySessionDetail:
     def test_empty_db_returns_none(self, empty_db):
         result = queries.get_session_detail(empty_db, "anything")
         assert result is None
+
+    def test_long_provider_turn_wait_marked_unreliable(self, tmp_path):
+        db_path = tmp_path / "turn-wait.db"
+        init_db(db_path)
+        session = _make_test_session(session_id="long-turn")
+        session.turn_count = 2
+        session.total_turn_duration_ms = (45 * 60 + 12) * 1000
+        session.max_turn_duration_ms = 45 * 60 * 1000
+        ingest_sessions(db_path, [session])
+
+        result = queries.get_session_detail(db_path, "long-turn")
+
+        assert result["turn_metrics_reliable"] is False
+        assert "idle gap over 30 minutes" in result["turn_metrics_note"]
+
+    def test_normal_provider_turn_wait_marked_reliable(self, seeded_db):
+        result = queries.get_session_detail(seeded_db, "sess-alpha-1")
+
+        assert result["turn_metrics_reliable"] is True
+        assert result["turn_metrics_note"] is None
+
+    def test_session_detail_hides_suspicious_turn_wait_totals(self, tmp_path):
+        db_path = tmp_path / "turn-route.db"
+        init_db(db_path)
+        session = _make_test_session(session_id="long-turn-route")
+        session.turn_count = 1
+        session.total_turn_duration_ms = 45 * 60 * 1000
+        session.max_turn_duration_ms = 45 * 60 * 1000
+        ingest_sessions(db_path, [session])
+        app = create_app(_make_config(db_path))
+        app.config["TESTING"] = True
+
+        with app.test_client() as c:
+            resp = c.get("/sessions/long-turn-route")
+
+        assert resp.status_code == 200
+        assert b"Provider-reported" in resp.data
+        assert b"idle gap over 30 minutes" in resp.data
+        assert b"45m 0s" not in resp.data
 
 
 class TestQueryEffectivenessSummary:
@@ -812,6 +1076,11 @@ class TestQueryToolCounts:
         result = queries.get_tool_counts(empty_db)
         assert result == []
 
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_tool_counts(mixed_provider_db, provider="codex")
+        by_name = {r["tool_name"]: r["count"] for r in result}
+        assert by_name == {"Read": 1, "Edit": 1}
+
 
 class TestQueryToolWeekly:
     """Tests for get_tool_weekly."""
@@ -865,6 +1134,11 @@ class TestQueryTopFiles:
     def test_empty_db_returns_empty_list(self, empty_db):
         result = queries.get_top_files(empty_db)
         assert result == []
+
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_top_files(mixed_provider_db, provider="codex")
+        assert result[0]["file_path"] == "src/main.py"
+        assert result[0]["total"] == 2
 
 
 # ===========================================================================
@@ -1006,8 +1280,27 @@ class TestCategorizeError:
     def test_bash_git_is_git(self):
         assert queries._categorize_error("Bash", "git push origin main") == "Git"
 
-    def test_bash_unknown_is_other(self):
-        assert queries._categorize_error("Bash", "curl https://example.com") == "Other"
+    def test_bash_curl_is_network(self):
+        assert queries._categorize_error("Bash", "curl https://example.com") == "Network"
+
+    def test_bash_rg_is_file_access(self):
+        assert queries._categorize_error("Bash", "rg TODO src/") == "File Access"
+
+    def test_bash_gh_is_external_service(self):
+        assert queries._categorize_error("Bash", "gh pr checks") == "External Service"
+
+    def test_shell_alias_uses_bash_categories(self):
+        assert queries._categorize_error("shell", "npm run build") == "Build"
+
+    def test_permission_description_is_permission_category(self):
+        assert (
+            queries._categorize_error(
+                "Bash",
+                "launchctl bootstrap gui/501 job.plist",
+                "sandbox_permissions=require_escalated",
+            )
+            == "Permission"
+        )
 
     def test_non_bash_no_command_is_other(self):
         assert queries._categorize_error("Task", None) == "Other"
@@ -1140,6 +1433,11 @@ class TestCostConcentration:
         assert result["sessions"] == []
         assert result["top3_pct"] == 0
 
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_cost_concentration(mixed_provider_db, provider="codex")
+        assert [s["project_name"] for s in result["sessions"]] == ["beta"]
+        assert result["sessions"][0]["provider"] == "codex"
+
 
 class TestCostPerEditByDuration:
     """Tests for get_cost_per_edit_by_duration."""
@@ -1159,6 +1457,13 @@ class TestCostPerEditByDuration:
     def test_empty_db_returns_empty(self, empty_db):
         result = queries.get_cost_per_edit_by_duration(empty_db)
         assert result == []
+
+    def test_filter_by_provider(self, mixed_provider_db):
+        result = queries.get_cost_per_edit_by_duration(
+            mixed_provider_db,
+            provider="codex",
+        )
+        assert sum(bucket["n"] for bucket in result) == 1
 
 
 class TestModelBreakdown:
@@ -1291,6 +1596,13 @@ class TestInsightsRoute:
     def test_insights_contains_tool_sequences(self, client):
         resp = client.get("/insights")
         assert b"Tool Sequences" in resp.data
+
+    def test_insights_provider_filter(self, mixed_provider_client):
+        resp = mixed_provider_client.get("/insights?provider=codex")
+        assert resp.status_code == 200
+        assert b"Codex" in resp.data
+        assert b"beta" in resp.data
+        assert b"alpha" not in resp.data
 
     def test_insights_empty_db_returns_200(self, empty_client):
         resp = empty_client.get("/insights")
@@ -1437,6 +1749,365 @@ class TestPermissionModeBreakdown:
 
 
 # ===========================================================================
+# Permission Friction Summary
+# ===========================================================================
+
+
+@pytest.fixture
+def permission_friction_db(tmp_path):
+    """Database with recent permission-friction tool calls."""
+    db_path = tmp_path / "permission-friction.db"
+    init_db(db_path)
+    now = datetime.now(timezone.utc)
+    tool_calls = [
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=now,
+            command="rg TODO src/",
+            description="sandbox_permissions=require_escalated",
+        ),
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=now,
+            command="uv run pytest",
+            description="sandbox_permissions=require_escalated; prefix_rule=['uv', 'run']",
+        ),
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=now,
+            command="uv run ruff check src/ tests/",
+            description="sandbox_permissions=require_escalated",
+        ),
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=now,
+            command="launchctl bootstrap gui/501 job.plist",
+            description="sandbox_permissions=require_escalated",
+            is_error=True,
+        ),
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=now,
+            command="BROWSER_QA_ALLOW_SYSTEM_CHROME=1 node scripts/capture.js",
+            description="sandbox denied",
+            is_error=True,
+        ),
+    ]
+    msg = ParsedMessage(
+        uuid="msg-friction-1",
+        parent_uuid=None,
+        session_id="friction-1",
+        timestamp=now,
+        role="assistant",
+        type="assistant",
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        content_length=100,
+        tool_calls=tool_calls,
+    )
+    session = ParsedSession(
+        provider="codex",
+        session_id="friction-1",
+        project_path="/Users/test/projects/app",
+        project_name="app",
+        source_file="/fake/friction-1.jsonl",
+        started_at=now,
+        ended_at=now + timedelta(minutes=5),
+        messages=[msg],
+        duration_seconds=300,
+        total_input_tokens=100,
+        total_output_tokens=50,
+        total_cache_read_tokens=0,
+        total_cache_creation_tokens=0,
+        estimated_cost_usd=0.01,
+        message_count=1,
+        user_message_count=0,
+        assistant_message_count=1,
+        tool_call_count=len(tool_calls),
+        file_read_count=0,
+        file_write_count=0,
+        file_edit_count=0,
+        bash_count=len(tool_calls),
+        tool_error_count=2,
+        active_duration_seconds=300,
+        work_blocks=[
+            WorkBlock(
+                session_id="friction-1",
+                block_index=0,
+                started_at=now,
+                ended_at=now + timedelta(minutes=5),
+                duration_seconds=300,
+                message_count=1,
+            ),
+        ],
+    )
+    old_session = _make_test_session(
+        session_id="old-friction",
+        project_name="app",
+        provider="codex",
+        days_ago=3,
+    )
+    old_session.messages[0].tool_calls = [
+        ToolCall(
+            tool_name="Bash",
+            file_path=None,
+            timestamp=old_session.started_at,
+            command="rg old",
+            description="sandbox_permissions=require_escalated",
+        )
+    ]
+    old_session.tool_call_count = 1
+    old_session.bash_count = 1
+    ingest_sessions(db_path, [session, old_session])
+    return db_path
+
+
+@pytest.fixture
+def investigation_quality_db(tmp_path):
+    """Database with data-quality issues beyond permission friction."""
+    db_path = tmp_path / "investigation-quality.db"
+    init_db(db_path)
+    now = datetime.now(timezone.utc)
+
+    def make_session(
+        session_id: str,
+        tool_calls: list[ToolCall],
+        *,
+        project_name: str = "app",
+        project_path: str = "/Users/test/projects/app",
+        cost: float = 0.25,
+        active_seconds: int = 300,
+        duration_seconds: int = 600,
+        edit_count: int = 0,
+        write_count: int = 0,
+    ) -> ParsedSession:
+        started = now
+        ended = started + timedelta(seconds=duration_seconds)
+        msg = ParsedMessage(
+            uuid=f"msg-{session_id}",
+            parent_uuid=None,
+            session_id=session_id,
+            timestamp=started,
+            role="assistant",
+            type="assistant",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            content_length=100,
+            tool_calls=tool_calls,
+        )
+        return ParsedSession(
+            provider="codex",
+            session_id=session_id,
+            project_path=project_path,
+            project_name=project_name,
+            source_file=f"/fake/{session_id}.jsonl",
+            started_at=started,
+            ended_at=ended,
+            messages=[msg],
+            duration_seconds=duration_seconds,
+            total_input_tokens=100,
+            total_output_tokens=50,
+            total_cache_read_tokens=0,
+            total_cache_creation_tokens=0,
+            estimated_cost_usd=cost,
+            message_count=1,
+            user_message_count=0,
+            assistant_message_count=1,
+            tool_call_count=len(tool_calls),
+            file_read_count=0,
+            file_write_count=write_count,
+            file_edit_count=edit_count,
+            bash_count=sum(1 for tc in tool_calls if tc.tool_name == "Bash"),
+            tool_error_count=sum(1 for tc in tool_calls if tc.is_error),
+            active_duration_seconds=active_seconds,
+            work_blocks=[
+                WorkBlock(
+                    session_id=session_id,
+                    block_index=0,
+                    started_at=started,
+                    ended_at=started + timedelta(seconds=active_seconds),
+                    duration_seconds=active_seconds,
+                    message_count=1,
+                )
+            ] if active_seconds else [],
+        )
+
+    other_errors = make_session(
+        "other-errors",
+        [
+            ToolCall(
+                tool_name="Bash",
+                file_path=None,
+                timestamp=now,
+                command=f"custom-tool-{i}",
+                is_error=True,
+            )
+            for i in range(4)
+        ],
+    )
+    pathless_edits = make_session(
+        "pathless-edits",
+        [
+            ToolCall(tool_name="Edit", file_path=None, timestamp=now),
+            ToolCall(tool_name="Write", file_path=None, timestamp=now),
+            ToolCall(tool_name="Edit", file_path=None, timestamp=now),
+        ],
+    )
+    expensive_no_edit = make_session(
+        "expensive-no-edit",
+        [ToolCall(tool_name="Read", file_path="src/app.py", timestamp=now) for _ in range(8)],
+        cost=2.50,
+    )
+    low_active = make_session(
+        "low-active",
+        [ToolCall(tool_name="Read", file_path="src/app.py", timestamp=now) for _ in range(12)],
+        active_seconds=30,
+        duration_seconds=3600,
+    )
+    weak_project = make_session(
+        "weak-project",
+        [ToolCall(tool_name="Read", file_path="src/app.py", timestamp=now)],
+        project_name="codex",
+        project_path="/Users/test/.codex",
+    )
+
+    ingest_sessions(
+        db_path,
+        [other_errors, pathless_edits, expensive_no_edit, low_active, weak_project],
+    )
+    return db_path
+
+
+class TestPermissionFrictionSummary:
+    def test_counts_unique_friction_calls(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        assert result["unique_friction_calls"] == 5
+
+    def test_counts_escalations_and_permission_errors(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        assert result["escalation_markers"] == 4
+        assert result["permission_errors"] == 2
+
+    def test_counts_missing_prefix_rules(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        assert result["no_prefix_rule_escalations"] == 3
+
+    def test_groups_command_families_without_raw_commands(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        families = {item["family"]: item["count"] for item in result["command_families"]}
+        assert families["rg"] == 1
+        assert families["uv run"] == 2
+        assert families["node"] == 1
+
+    def test_allowlist_candidates(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        candidates = {
+            item["label"]: item["count"] for item in result["allowlist_candidates"]
+        }
+        assert candidates["uv run ruff"] == 1
+
+    def test_keep_on_request_families(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        keep = {item["label"]: item["count"] for item in result["keep_on_request"]}
+        assert keep["rg"] == 1
+        assert keep["launchctl"] == 1
+
+    def test_cause_breakdown(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        causes = {item["label"]: item["count"] for item in result["cause_breakdown"]}
+        assert causes["missing prefix rule"] == 3
+        assert causes["broad search"] == 1
+        assert causes["verification command"] == 2
+        assert causes["browser/system access"] == 2
+
+    def test_uses_recent_window(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(permission_friction_db)
+        assert result["session_count"] == 1
+        assert result["sessions_with_friction"] == 1
+
+    def test_provider_filter(self, permission_friction_db):
+        result = queries.get_permission_friction_summary(
+            permission_friction_db,
+            provider="claude",
+        )
+        assert result["session_count"] == 0
+        assert result["unique_friction_calls"] == 0
+
+
+class TestInvestigationQueue:
+    def test_returns_flagged_sessions(self, permission_friction_db):
+        result = queries.get_investigation_queue(permission_friction_db)
+        assert len(result) == 1
+        assert result[0]["session_id"] == "friction-1"
+
+    def test_scores_permission_friction(self, permission_friction_db):
+        result = queries.get_investigation_queue(permission_friction_db)
+        assert result[0]["score"] > 0
+        assert result[0]["permission_friction"] == 5
+
+    def test_flags_include_permission_signals(self, permission_friction_db):
+        result = queries.get_investigation_queue(permission_friction_db)
+        labels = {flag["label"] for flag in result[0]["flags"]}
+        assert "5 permission friction" in labels
+        assert "missing prefix rules" in labels
+        assert "2 permission errors" in labels
+
+    def test_includes_cause_labels(self, permission_friction_db):
+        result = queries.get_investigation_queue(permission_friction_db)
+        causes = {cause["label"] for cause in result[0]["causes"]}
+        assert "missing prefix rule" in causes
+        assert "browser/system access" in causes
+
+    def test_provider_filter(self, permission_friction_db):
+        result = queries.get_investigation_queue(
+            permission_friction_db,
+            provider="claude",
+        )
+        assert result == []
+
+    def test_flags_residual_other_errors(self, investigation_quality_db):
+        result = queries.get_investigation_queue(investigation_quality_db, limit=20)
+        session = next(row for row in result if row["session_id"] == "other-errors")
+        labels = {flag["label"] for flag in session["flags"]}
+        assert "4 Other errors" in labels
+        assert session["other_errors"] == 4
+
+    def test_flags_edit_calls_without_paths(self, investigation_quality_db):
+        result = queries.get_investigation_queue(investigation_quality_db, limit=20)
+        session = next(row for row in result if row["session_id"] == "pathless-edits")
+        labels = {flag["label"] for flag in session["flags"]}
+        assert "3 edits missing paths" in labels
+        assert session["edit_calls_without_paths"] == 3
+
+    def test_flags_expensive_no_edit_sessions(self, investigation_quality_db):
+        result = queries.get_investigation_queue(investigation_quality_db, limit=20)
+        session = next(row for row in result if row["session_id"] == "expensive-no-edit")
+        labels = {flag["label"] for flag in session["flags"]}
+        assert "expensive no-edit" in labels
+
+    def test_flags_low_active_time(self, investigation_quality_db):
+        result = queries.get_investigation_queue(investigation_quality_db, limit=20)
+        session = next(row for row in result if row["session_id"] == "low-active")
+        labels = {flag["label"] for flag in session["flags"]}
+        assert "low active time" in labels
+
+    def test_flags_weak_project_attribution(self, investigation_quality_db):
+        result = queries.get_investigation_queue(investigation_quality_db, limit=20)
+        session = next(row for row in result if row["session_id"] == "weak-project")
+        labels = {flag["label"] for flag in session["flags"]}
+        assert "weak attribution" in labels
+
+
+# ===========================================================================
 # Session Detail — Thinking + Permission
 # ===========================================================================
 
@@ -1482,6 +2153,19 @@ class TestInsightsThinkingPermission:
             assert resp.status_code == 200
             assert b"Thinking Blocks" in resp.data
             assert b"Permission Modes" in resp.data
+
+    def test_insights_with_permission_friction_renders(self, permission_friction_db):
+        config = _make_config(permission_friction_db)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/insights")
+            assert resp.status_code == 200
+            assert b"Permission Friction" in resp.data
+            assert b"No Prefix Rule" in resp.data
+            assert b"Reusable Approval Candidates" in resp.data
+            assert b"Investigation Queue" in resp.data
+            assert b"Cause Labels" in resp.data
 
 
 # ===========================================================================

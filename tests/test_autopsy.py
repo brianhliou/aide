@@ -26,6 +26,7 @@ from aide.models import ParsedMessage, ParsedSession, ToolCall
 
 
 def _make_test_session(
+    provider="claude",
     session_id="test-session-001",
     project_name="myproject",
     started_at="2026-02-01T10:00:00",
@@ -48,6 +49,7 @@ def _make_test_session(
     """Build a session dict matching DB row shape."""
     return {
         "id": 1,
+        "provider": provider,
         "session_id": session_id,
         "project_path": f"-Users-brian-projects-{project_name}",
         "project_name": project_name,
@@ -73,6 +75,7 @@ def _make_test_session(
 def _make_test_messages(
     session_id="test-session-001",
     growing_input=True,
+    model=None,
 ) -> list[dict]:
     """Build a list of message dicts with growing input_tokens.
 
@@ -89,6 +92,7 @@ def _make_test_messages(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_tokens": 0, "cache_creation_tokens": 0,
         "content_length": 50, "has_tool_use": 0, "tool_names": None,
+        "model": model,
     })
     # assistant 1 — Read
     messages.append({
@@ -98,6 +102,7 @@ def _make_test_messages(
         "output_tokens": 200,
         "cache_read_tokens": 500, "cache_creation_tokens": 3000,
         "content_length": 150, "has_tool_use": 1, "tool_names": "Read",
+        "model": model,
     })
     # user 2
     messages.append({
@@ -106,6 +111,7 @@ def _make_test_messages(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_tokens": 0, "cache_creation_tokens": 0,
         "content_length": 30, "has_tool_use": 0, "tool_names": None,
+        "model": model,
     })
     # assistant 2 — Edit
     messages.append({
@@ -115,6 +121,7 @@ def _make_test_messages(
         "output_tokens": 350,
         "cache_read_tokens": 3500, "cache_creation_tokens": 0,
         "content_length": 250, "has_tool_use": 1, "tool_names": "Edit",
+        "model": model,
     })
     # user 3
     messages.append({
@@ -123,6 +130,7 @@ def _make_test_messages(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_tokens": 0, "cache_creation_tokens": 0,
         "content_length": 30, "has_tool_use": 0, "tool_names": None,
+        "model": model,
     })
     # assistant 3 — Bash
     messages.append({
@@ -132,6 +140,7 @@ def _make_test_messages(
         "output_tokens": 150,
         "cache_read_tokens": 5500, "cache_creation_tokens": 0,
         "content_length": 100, "has_tool_use": 1, "tool_names": "Bash",
+        "model": model,
     })
     # user 4
     messages.append({
@@ -140,6 +149,7 @@ def _make_test_messages(
         "input_tokens": 0, "output_tokens": 0,
         "cache_read_tokens": 0, "cache_creation_tokens": 0,
         "content_length": 30, "has_tool_use": 0, "tool_names": None,
+        "model": model,
     })
     # assistant 4 — no tools (final response)
     messages.append({
@@ -149,6 +159,7 @@ def _make_test_messages(
         "output_tokens": 100,
         "cache_read_tokens": 6000, "cache_creation_tokens": 0,
         "content_length": 200, "has_tool_use": 0, "tool_names": None,
+        "model": model,
     })
 
     return messages
@@ -193,6 +204,7 @@ def _make_test_files_touched() -> list[dict]:
 def _make_parsed_session(
     session_id="test-session-001",
     project_name="myproject",
+    provider="claude",
 ) -> ParsedSession:
     """Build a ParsedSession for DB ingestion in integration tests."""
     started = datetime(2026, 2, 1, 10, 0, 0, tzinfo=timezone.utc)
@@ -294,6 +306,7 @@ def _make_parsed_session(
         file_write_count=0,
         file_edit_count=1,
         bash_count=1,
+        provider=provider,
     )
 
 
@@ -429,6 +442,7 @@ class TestAnalyzeSummary:
         result = analyze_summary(session, tool_usage, files_touched)
 
         assert result.session_id == "test-session-001"
+        assert result.provider == "claude"
         assert result.project_name == "myproject"
         assert result.started_at == "2026-02-01T10:00:00"
         assert result.ended_at == "2026-02-01T10:30:00"
@@ -582,6 +596,25 @@ class TestAnalyzeCost:
 
         # cache_savings = 15500 * (3.00 - 0.30) / 1_000_000
         expected_savings = 15500 * 2.70 / 1_000_000
+        assert abs(ce.cache_savings_usd - expected_savings) < 0.0001
+
+    def test_codex_cache_efficiency_uses_total_input_semantics(self):
+        """Codex logs report total input plus cached input details."""
+        session = _make_test_session(
+            provider="codex",
+            total_input_tokens=10000,
+            total_cache_read_tokens=4000,
+            total_cache_creation_tokens=0,
+        )
+        messages = _make_test_messages(model="gpt-5.5")
+
+        result = analyze_cost(session, messages, [])
+
+        ce = result.cache_efficiency
+        assert ce.total_input_tokens == 10000
+        assert ce.fresh_input_tokens == 6000
+        assert ce.cache_hit_rate == 0.4
+        expected_savings = 4000 * (5.00 - 0.50) / 1_000_000
         assert abs(ce.cache_savings_usd - expected_savings) < 0.0001
 
     def test_zero_cost_session(self):
@@ -745,6 +778,35 @@ class TestSuggestions:
         assert "/src/a.py" in high_suggestions[0].suggestion
         assert high_suggestions[0].category == "repeated_reads"
 
+    def test_codex_suggestions_reference_agents_md(self):
+        """Codex suggestions should point at AGENTS.md."""
+        files = [{"file_path": "/src/a.py", "read_count": 3, "edit_count": 0,
+                  "write_count": 0, "total": 3}]
+        cache = CacheEfficiency(
+            total_input_tokens=1000, cache_read_tokens=300,
+            cache_creation_tokens=0, fresh_input_tokens=700,
+            cache_hit_rate=0.30, cache_savings_usd=0.01,
+        )
+
+        suggestions = generate_suggestions(
+            files, cache, 0, 10, instruction_target="AGENTS.md"
+        )
+
+        assert suggestions
+        assert all("CLAUDE.md" not in s.suggestion for s in suggestions)
+        assert any("AGENTS.md" in s.suggestion for s in suggestions)
+
+    def test_analyze_suggestions_sets_instruction_target_for_codex(self):
+        cache = CacheEfficiency(
+            total_input_tokens=1000, cache_read_tokens=300,
+            cache_creation_tokens=0, fresh_input_tokens=700,
+            cache_hit_rate=0.30, cache_savings_usd=0.01,
+        )
+
+        result = analyze_suggestions([], cache, 0, 10, provider="codex")
+
+        assert result.instruction_target == "AGENTS.md"
+
     def test_file_read_2x_no_suggestion(self):
         """File read only 2 times does NOT produce a suggestion."""
         files = [{"file_path": "/src/a.py", "read_count": 2, "edit_count": 0,
@@ -850,12 +912,13 @@ class TestSuggestions:
 class TestReport:
     """Tests for report rendering."""
 
-    def _build_full_report(self):
+    def _build_full_report(self, provider="claude"):
         """Helper: run all analyzers and render a full report."""
-        session = _make_test_session()
+        session = _make_test_session(provider=provider)
         tool_usage = _make_test_tool_usage()
         files_touched = _make_test_files_touched()
-        messages = _make_test_messages()
+        model = "gpt-5.5" if provider == "codex" else None
+        messages = _make_test_messages(model=model)
         tool_calls = _make_test_tool_calls()
 
         summary = analyze_summary(session, tool_usage, files_touched)
@@ -864,6 +927,7 @@ class TestReport:
         suggestions = analyze_suggestions(
             files_touched, cost.cache_efficiency,
             context.estimated_compaction_count, session["tool_call_count"],
+            provider=provider,
         )
         return render_report(summary, cost, context, suggestions)
 
@@ -875,6 +939,14 @@ class TestReport:
         assert "## 2. Cost Analysis" in report
         assert "## 3. Context Analysis" in report
         assert "## 4. CLAUDE.md Suggestions" in report
+
+    def test_codex_report_uses_agents_md_suggestions(self):
+        """Codex report uses Codex project instruction wording."""
+        report = self._build_full_report(provider="codex")
+
+        assert "| **Provider** | codex |" in report
+        assert "## 4. AGENTS.md Suggestions" in report
+        assert "CLAUDE.md Suggestions" not in report
 
     def test_contains_session_id(self):
         """Report contains the session ID (first 8 chars)."""
@@ -978,6 +1050,34 @@ class TestCLI:
         assert "Context Analysis" in result.output
         assert "CLAUDE.md Suggestions" in result.output
         assert "Generated by aide autopsy" in result.output
+
+    def test_autopsy_codex_session_uses_agents_md(self, tmp_db):
+        """aide autopsy uses provider-specific instruction wording."""
+        init_db(tmp_db)
+        parsed = _make_parsed_session(
+            session_id="codex-session-001",
+            provider="codex",
+        )
+        ingest_sessions(tmp_db, [parsed])
+
+        runner = CliRunner()
+        with patch("aide.cli.load_config") as mock_config:
+            from aide.config import AideConfig
+            mock_config.return_value = AideConfig(
+                subscription_user=False,
+                log_dir=tmp_db.parent,
+                port=8787,
+                db_path=tmp_db,
+            )
+            result = runner.invoke(
+                cli,
+                ["autopsy", "codex-session-001", "--provider", "codex"],
+            )
+
+        assert result.exit_code == 0
+        assert "| **Provider** | codex |" in result.output
+        assert "AGENTS.md Suggestions" in result.output
+        assert "CLAUDE.md Suggestions" not in result.output
 
     def test_autopsy_no_db(self, tmp_path):
         """aide autopsy with no database exits with error."""

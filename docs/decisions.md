@@ -27,3 +27,18 @@ Show API-rate cost estimates by default. For subscription users (Pro/Max), confi
 
 **2026-02-10 — Zero LLM calls in v1**
 All analysis is heuristic-based. No marginal cost to run. Session categorization (bug fix vs. feature) requires LLM and is deferred to future version.
+
+**2026-05-01 — Provider extensibility: Codex support via adapters**
+Codex support should be added as a second ingestion provider, not as a separate product or separate dashboard. Raw provider logs should be normalized into the existing session/message/tool-call model, with provider-qualified session identity to avoid collisions. Claude Code remains the backward-compatible default for existing config.
+
+**2026-05-01 — Redaction before real-log fixtures**
+Real Claude or Codex logs may contain prompts, file paths, tool outputs, commands, and secrets. Before using real Codex logs as fixtures or sharing examples, add deterministic redaction tooling that preserves parser-relevant structure while removing sensitive content. The product remains zero-LLM-call; redaction must be local and heuristic-based.
+
+**2026-05-02 — Redaction policy: structure over prose**
+Redacted backups and fixtures should preserve event shape, timestamps, provider metadata, model names, token usage, tool names, exit codes, durations, sanitized command structure, and path shape. They should remove prompt text, assistant prose, tool output, code/file contents, patch lines, image payloads, URLs, secrets, and local usernames/project names. Secret matching should target assignments, bearer values, known token formats, and CLI secret flags; it should not redact ordinary command vocabulary such as `modal token info` or phrases like "token context window."
+
+**2026-05-02 — Codex support wrap-up: interpretation quality is the next frontier**
+Claude and Codex now share provider-qualified ingestion, redacted backups, dashboard filters, session detail, autopsy, and aggregate insights. Codex parsing captures command/workdir project fallback, permission mode normalization, shell normalization, obvious file mutation attribution, and richer error categories. Remaining work should focus on interpretation quality rather than ingestion plumbing: data-quality checks, an investigation queue, remaining `Other` error analysis, richer shell edit attribution, and provider-specific metric availability notes.
+
+**2026-05-02 — Active time is authoritative over wall-clock and provider wait time**
+Project and session time should use active work-block duration, not raw wall-clock spans. Session detail may preserve wall-clock and provider-reported turn data for debugging, but provider turn waits over the 30-minute idle threshold should be treated as unreliable for productivity timing because they may include human sleep, permission waits, or other idle gaps.

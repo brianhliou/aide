@@ -913,3 +913,176 @@ def test_reingest_clears_work_blocks(tmp_db):
     con.close()
 
     assert wb_count == 2  # not 3
+
+
+def test_same_session_id_can_exist_for_multiple_providers(tmp_db):
+    """Provider-qualified identity allows duplicate raw session IDs."""
+    import sqlite3
+
+    init_db(tmp_db)
+    claude = _make_session(session_id="shared-id", project_name="claude-project")
+    codex = _make_session(
+        session_id="shared-id",
+        project_name="codex-project",
+        source_file="/logs/codex.jsonl",
+    )
+    codex.provider = "codex"
+
+    ingest_sessions(tmp_db, [claude, codex])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT provider, session_id, project_name FROM sessions ORDER BY provider"
+    ).fetchall()
+    msg_count = con.execute(
+        "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+        ("shared-id",),
+    ).fetchone()[0]
+    con.close()
+
+    assert [(r["provider"], r["project_name"]) for r in rows] == [
+        ("claude", "claude-project"),
+        ("codex", "codex-project"),
+    ]
+    assert msg_count == 4
+
+
+def test_reingest_only_replaces_matching_provider(tmp_db):
+    """Re-ingesting codex/shared-id does not clear claude/shared-id children."""
+    import sqlite3
+
+    init_db(tmp_db)
+    claude = _make_session(session_id="shared-id", project_name="claude-project")
+    codex_v1 = _make_session(
+        session_id="shared-id",
+        project_name="codex-project",
+        source_file="/logs/codex.jsonl",
+        cost=0.10,
+    )
+    codex_v1.provider = "codex"
+    ingest_sessions(tmp_db, [claude, codex_v1])
+
+    codex_v2 = _make_session(
+        session_id="shared-id",
+        project_name="codex-project",
+        source_file="/logs/codex.jsonl",
+        cost=0.25,
+    )
+    codex_v2.provider = "codex"
+    ingest_sessions(tmp_db, [codex_v2])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        """SELECT provider, estimated_cost_usd
+        FROM sessions
+        WHERE session_id = ?
+        ORDER BY provider""",
+        ("shared-id",),
+    ).fetchall()
+    child_counts = con.execute(
+        """SELECT provider, COUNT(*) AS count
+        FROM messages
+        WHERE session_id = ?
+        GROUP BY provider
+        ORDER BY provider""",
+        ("shared-id",),
+    ).fetchall()
+    con.close()
+
+    assert [(r["provider"], r["estimated_cost_usd"]) for r in rows] == [
+        ("claude", 0.05),
+        ("codex", 0.25),
+    ]
+    assert [(r["provider"], r["count"]) for r in child_counts] == [
+        ("claude", 2),
+        ("codex", 2),
+    ]
+
+
+def test_ingest_log_is_provider_scoped(tmp_db):
+    """The same source path can be tracked independently per provider."""
+    import sqlite3
+
+    init_db(tmp_db)
+    log_ingestion(
+        tmp_db,
+        "/logs/session.jsonl",
+        file_size=100,
+        file_mtime=1.0,
+        session_count=1,
+        provider="claude",
+    )
+    log_ingestion(
+        tmp_db,
+        "/logs/session.jsonl",
+        file_size=200,
+        file_mtime=2.0,
+        session_count=2,
+        provider="codex",
+    )
+
+    claude = get_ingested_file(tmp_db, "/logs/session.jsonl", provider="claude")
+    codex = get_ingested_file(tmp_db, "/logs/session.jsonl", provider="codex")
+
+    con = sqlite3.connect(tmp_db)
+    count = con.execute("SELECT COUNT(*) FROM ingest_log").fetchone()[0]
+    con.close()
+
+    assert count == 2
+    assert claude["file_size"] == 100
+    assert claude["provider"] == "claude"
+    assert codex["file_size"] == 200
+    assert codex["provider"] == "codex"
+
+
+def test_init_db_migrates_old_unique_session_schema_to_provider_identity(tmp_db):
+    """init_db rebuilds old session_id-only uniqueness even after views exist."""
+    import sqlite3
+
+    con = sqlite3.connect(tmp_db)
+    con.execute("""CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        project_path TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        source_file TEXT NOT NULL
+    )""")
+    con.execute(
+        """INSERT INTO sessions
+        (session_id, project_path, project_name, started_at, source_file)
+        VALUES ('existing', '/project', 'project', '2025-01-01T00:00:00+00:00', '/logs/a.jsonl')"""
+    )
+    con.commit()
+    con.close()
+
+    init_db(tmp_db)
+    codex = _make_session(
+        session_id="existing",
+        project_name="codex-project",
+        source_file="/logs/codex.jsonl",
+    )
+    codex.provider = "codex"
+    ingest_sessions(tmp_db, [codex])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    providers = [
+        row["provider"]
+        for row in con.execute(
+            "SELECT provider FROM sessions WHERE session_id = ? ORDER BY provider",
+            ("existing",),
+        ).fetchall()
+    ]
+    views = {
+        row[0]
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'view'"
+        ).fetchall()
+    }
+    con.close()
+
+    assert providers == ["claude", "codex"]
+    assert {"v_sessions_30d", "v_sessions_quarter"}.issubset(views)

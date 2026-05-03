@@ -107,3 +107,4 @@ class ParsedSession:
     permission_mode: str | None = None
     active_duration_seconds: int = 0
     work_blocks: list[WorkBlock] = field(default_factory=list)
+    provider: str = "claude"

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from statistics import mean
 
-from aide.cost import estimate_cost
+from aide.cost import OPENAI_PROVIDERS, _pricing_for_model, estimate_cost
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -33,6 +33,7 @@ class FileAccessCount:
 
 @dataclass
 class SessionSummary:
+    provider: str
     session_id: str
     project_name: str
     started_at: str
@@ -128,6 +129,7 @@ class ClaudeMdSuggestion:
 
 @dataclass
 class SuggestionsReport:
+    instruction_target: str
     suggestions: list[ClaudeMdSuggestion]
     top_accessed_files: list[FileAccessCount]
     repeated_read_files: list[FileAccessCount]  # read 3+ times
@@ -188,6 +190,7 @@ def analyze_summary(
     )
 
     return SessionSummary(
+        provider=session.get("provider") or "claude",
         session_id=session["session_id"],
         project_name=session["project_name"],
         started_at=session["started_at"],
@@ -237,6 +240,9 @@ def analyze_cost(
     per category, computes cost per category, finds top 5 expensive turns,
     and calculates cache efficiency.
     """
+    provider = session.get("provider") or "claude"
+    session_model = _first_model(messages)
+
     # Accumulate tokens per category
     cat_tokens: dict[str, dict[str, int]] = {}
     all_categories = (
@@ -266,6 +272,8 @@ def analyze_cost(
             msg.get("output_tokens", 0) or 0,
             msg.get("cache_read_tokens", 0) or 0,
             msg.get("cache_creation_tokens", 0) or 0,
+            model=msg.get("model") or session_model,
+            provider=provider,
         )
         turn_costs.append(
             ExpensiveTurn(
@@ -291,6 +299,8 @@ def analyze_cost(
             tokens["output_tokens"],
             tokens["cache_read_tokens"],
             tokens["cache_creation_tokens"],
+            model=session_model,
+            provider=provider,
         )
         categories.append(
             CostCategory(
@@ -321,15 +331,23 @@ def analyze_cost(
     most_expensive = sorted(turn_costs, key=lambda t: t.estimated_cost_usd, reverse=True)[:5]
 
     # Cache efficiency
-    fresh_input = session["total_input_tokens"]
+    total_input = session["total_input_tokens"]
     cache_read = session["total_cache_read_tokens"]
     cache_creation = session["total_cache_creation_tokens"]
-    denominator = cache_read + fresh_input + cache_creation
+    if provider.lower() in OPENAI_PROVIDERS:
+        fresh_input = max(total_input - cache_read, 0)
+        denominator = total_input + cache_creation
+    else:
+        fresh_input = total_input
+        denominator = cache_read + fresh_input + cache_creation
     cache_hit_rate = cache_read / denominator if denominator > 0 else 0.0
-    cache_savings = cache_read * (3.00 - 0.30) / 1_000_000
+    pricing = _pricing_for_model(session_model, provider=provider)
+    cache_savings = (
+        cache_read * (pricing["input"] - pricing["cache_read"]) / 1_000_000
+    )
 
     cache_efficiency = CacheEfficiency(
-        total_input_tokens=fresh_input,
+        total_input_tokens=total_input,
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
         fresh_input_tokens=fresh_input,
@@ -414,20 +432,43 @@ def analyze_context(messages: list[dict]) -> ContextAnalysis:
     )
 
 
+def _first_model(messages: list[dict]) -> str | None:
+    for msg in messages:
+        model = msg.get("model")
+        if model:
+            return model
+    return None
+
+
+def instruction_target_for_provider(provider: str | None) -> str:
+    provider_lower = (provider or "claude").lower()
+    if provider_lower == "codex":
+        return "AGENTS.md"
+    if provider_lower == "claude":
+        return "CLAUDE.md"
+    return "project instructions"
+
+
 def analyze_suggestions(
     files_touched: list[dict],
     cache_efficiency: CacheEfficiency,
     compaction_count: int,
     tool_call_count: int,
+    provider: str = "claude",
 ) -> SuggestionsReport:
-    """Section 4: CLAUDE.md suggestions.
+    """Section 4: project instruction suggestions.
 
     Delegates to the suggestions rules engine.
     """
     from aide.autopsy.suggestions import generate_suggestions
 
+    instruction_target = instruction_target_for_provider(provider)
     suggestions = generate_suggestions(
-        files_touched, cache_efficiency, compaction_count, tool_call_count
+        files_touched,
+        cache_efficiency,
+        compaction_count,
+        tool_call_count,
+        instruction_target=instruction_target,
     )
 
     # Build FileAccessCount list for top accessed and repeated reads
@@ -446,6 +487,7 @@ def analyze_suggestions(
     repeated_reads = [f for f in file_access_counts if f.read_count >= 3]
 
     return SuggestionsReport(
+        instruction_target=instruction_target,
         suggestions=suggestions,
         top_accessed_files=top_accessed,
         repeated_read_files=repeated_reads,

@@ -5,6 +5,22 @@
 {% block content %}
 <h1 class="text-2xl font-bold mb-6">Projects</h1>
 
+<div class="flex items-center gap-2 mb-6 text-sm">
+    <span class="text-gray-500">Provider</span>
+    <a href="{{ url_for('dashboard.projects') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if not provider_filter else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        All
+    </a>
+    <a href="{{ url_for('dashboard.projects', provider='claude') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'claude' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Claude
+    </a>
+    <a href="{{ url_for('dashboard.projects', provider='codex') }}"
+       class="px-3 py-1 rounded border {{ 'bg-blue-600 text-white border-blue-600' if provider_filter == 'codex' else 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50' }}">
+        Codex
+    </a>
+</div>
+
 {# --- Projects table --- #}
 <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
     <table class="min-w-full divide-y divide-gray-200">
@@ -16,7 +32,8 @@
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total Cost</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Avg Cost/Session</th>
                 {% endif %}
-                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Sum of active work-block time; idle gaps are excluded">Active Time</th>
+                <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Avg / Session</th>
                 <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens</th>
             </tr>
         </thead>
@@ -24,7 +41,7 @@
             {% for p in projects %}
             <tr class="hover:bg-gray-50">
                 <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <a href="/sessions?project={{ p.project_name }}" class="text-blue-600 hover:text-blue-800 hover:underline">
+                    <a href="{{ url_for('dashboard.sessions', project=p.project_name, provider=provider_filter) if provider_filter else url_for('dashboard.sessions', project=p.project_name) }}" class="text-blue-600 hover:text-blue-800 hover:underline">
                         {{ p.project_name }}
                     </a>
                 </td>
@@ -51,6 +68,17 @@
                     {%- endif -%}
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
+                    {%- set avg_hours = (p.avg_active_duration_seconds // 3600)|int -%}
+                    {%- set avg_minutes = ((p.avg_active_duration_seconds % 3600) // 60)|int -%}
+                    {%- if avg_hours > 0 -%}
+                        {{ avg_hours }}h{{ " %dm"|format(avg_minutes) if avg_minutes > 0 else "" }}
+                    {%- elif avg_minutes > 0 -%}
+                        {{ avg_minutes }}m
+                    {%- else -%}
+                        0m
+                    {%- endif -%}
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-700 text-right">
                     {%- if p.total_tokens >= 1000000 -%}
                         {{ "%.1f"|format(p.total_tokens / 1000000) }}M
                     {%- elif p.total_tokens >= 1000 -%}
@@ -63,14 +91,14 @@
             {% endfor %}
             {% if not projects %}
             <tr>
-                <td colspan="{{ 4 if subscription_user else 6 }}" class="px-6 py-12 text-center text-sm text-gray-500">No projects found. Run <code class="bg-gray-100 px-1 rounded">aide ingest</code> first.</td>
+                <td colspan="{{ 5 if subscription_user else 7 }}" class="px-6 py-12 text-center text-sm text-gray-500">No projects found. Run <code class="bg-gray-100 px-1 rounded">aide ingest</code> first.</td>
             </tr>
             {% endif %}
         </tbody>
     </table>
 </div>
 
-<p class="text-sm text-gray-500 mb-8">Click a project to see its sessions.</p>
+<p class="text-sm text-gray-500 mb-8">Active time excludes idle gaps between work blocks.</p>
 
 {% if not subscription_user %}
 {# --- Cost per session scatter plot --- #}

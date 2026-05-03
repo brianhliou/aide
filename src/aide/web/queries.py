@@ -7,28 +7,52 @@ closed in a finally block.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import ast
+import shlex
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from pathlib import Path as _Path
 
+from aide.cost import OPENAI_PROVIDERS, estimate_cost
 from aide.db import get_connection
 
 # ---------------------------------------------------------------------------
 # Error categorization
 # ---------------------------------------------------------------------------
 
-# Categories: Test, Lint, Build, Git, Edit Mismatch, File Access, Other
+# Categories: Test, Lint, Build, Git, Network, Permission, External Service,
+# Edit Mismatch, File Access, Other
 _BASH_TEST_KW = ("pytest", "python -m pytest", "jest ", "mocha ", "cargo test", "go test")
 _BASH_LINT_KW = ("ruff", "mypy", "flake8", "eslint", "prettier", "black ", "isort")
 _BASH_BUILD_KW = ("pip ", "uv pip", "npm ", "yarn ", "cargo build", "make ")
+_BASH_NETWORK_KW = ("curl ", "wget ", "dig ", "whois ", "ssh ", "scp ", "rsync ")
+_BASH_FILE_KW = ("sed ", "rg ", "grep ", "find ", "ls ", "nl ", "cat ", "head ", "tail ")
+_BASH_EXTERNAL_KW = ("railway ", "gh ", "modal ", ".venv/bin/modal", "codex mcp")
+_PERMISSION_KW = (
+    "permission",
+    "operation not permitted",
+    "sandbox",
+    "require_escalated",
+    "launchctl",
+    "sudo ",
+)
 
 
-def _categorize_error(tool_name: str, command: str | None) -> str:
+def _categorize_error(
+    tool_name: str,
+    command: str | None,
+    description: str | None = None,
+) -> str:
     """Classify a tool error into a human-readable category."""
     if tool_name == "Edit":
         return "Edit Mismatch"
     if tool_name in ("Read", "Write", "Glob", "Grep"):
         return "File Access"
-    if tool_name != "Bash" or not command:
+    combined = " ".join(part for part in (command, description) if part).lower()
+    if combined and any(kw in combined for kw in _PERMISSION_KW):
+        return "Permission"
+    if tool_name not in ("Bash", "shell") or not command:
         return "Other"
     cmd = command.lower()
     if any(kw in cmd for kw in _BASH_TEST_KW):
@@ -39,14 +63,62 @@ def _categorize_error(tool_name: str, command: str | None) -> str:
         return "Build"
     if cmd.startswith("git "):
         return "Git"
+    if any(kw in cmd for kw in _BASH_NETWORK_KW):
+        return "Network"
+    if any(kw in cmd for kw in _BASH_EXTERNAL_KW):
+        return "External Service"
+    if any(kw in cmd for kw in _BASH_FILE_KW):
+        return "File Access"
     return "Other"
 
 
 # These are expected iteration errors, not mistakes
 _ITERATION_CATEGORIES = frozenset({"Test", "Lint", "Build"})
+_TURN_WAIT_IDLE_THRESHOLD_MS = 30 * 60 * 1000
+_ESCALATION_MARKERS = (
+    "require_escalated",
+    "sandbox_permissions",
+    "prefix_rule",
+    "approval",
+)
+_WEAK_PROJECT_NAMES = frozenset({"projects", "codex"})
+_VERIFICATION_FAMILIES = frozenset({
+    "pytest",
+    "ruff",
+    "uv run pytest",
+    "uv run ruff",
+    "npm run test",
+    "npm run lint",
+    "npm run build",
+    "npm run typecheck",
+    "yarn test",
+    "yarn lint",
+    "pnpm test",
+    "pnpm lint",
+    "just check",
+    "just test",
+    "just lint",
+    "make check",
+    "make test",
+    "make lint",
+})
+_BROAD_SEARCH_FAMILIES = frozenset({"rg", "find", "grep", "fd"})
+_MUTATION_FAMILIES = frozenset({
+    "perl", "sed", "cp", "mv", "tee", "python", "python3", "node", "ruby",
+})
+_BROWSER_SYSTEM_FAMILIES = frozenset({
+    "launchctl", "ps", "lsof", "open", "osascript", "kill", "pkill",
+})
+_EXTERNAL_SERVICE_FAMILIES = frozenset({
+    "curl", "wget", "gh pr", "gh run", "gh issue", "railway status",
+    "railway logs", "railway deploy", "vercel logs", "vercel deploy",
+})
+_EXPENSIVE_NO_EDIT_COST_USD = 1.00
+_LOW_ACTIVE_TIME_SECONDS = 60
+_LOW_ACTIVE_TIME_RATIO = 0.05
 
 
-def get_overview_summary(db_path: Path) -> dict:
+def get_overview_summary(db_path: Path, provider: str | None = None) -> dict:
     """Summary stats for the overview page.
 
     Returns:
@@ -64,47 +136,54 @@ def get_overview_summary(db_path: Path) -> dict:
         week_start = (today - timedelta(days=today.weekday())).isoformat()
         today_str = today.isoformat()
 
+        provider_filter = "AND provider = ?" if provider else ""
+        provider_params = (provider,) if provider else ()
+        wb_provider_filter = "AND provider = ?" if provider else ""
+
         row_30d = con.execute(
-            """SELECT
+            f"""SELECT
                 COUNT(*) AS sessions,
                 COALESCE(SUM(estimated_cost_usd), 0) AS cost,
                 COUNT(DISTINCT project_name) AS projects
             FROM sessions
-            WHERE date(started_at) >= ?""",
-            (thirty_days_ago,),
+            WHERE date(started_at) >= ? {provider_filter}""",
+            (thirty_days_ago, *provider_params),
         ).fetchone()
 
         row_week = con.execute(
-            """SELECT
+            f"""SELECT
                 COUNT(*) AS sessions,
                 COALESCE(SUM(estimated_cost_usd), 0) AS cost,
                 COUNT(DISTINCT project_name) AS projects
             FROM sessions
-            WHERE date(started_at) >= ?""",
-            (week_start,),
+            WHERE date(started_at) >= ? {provider_filter}""",
+            (week_start, *provider_params),
         ).fetchone()
 
         row_today = con.execute(
-            """SELECT
+            f"""SELECT
                 COUNT(*) AS sessions,
                 COALESCE(SUM(estimated_cost_usd), 0) AS cost
             FROM sessions
-            WHERE date(started_at) = ?""",
-            (today_str,),
+            WHERE date(started_at) = ? {provider_filter}""",
+            (today_str, *provider_params),
         ).fetchone()
 
         # Work block counts for each period
         wb_30d = con.execute(
-            "SELECT COUNT(*) AS n FROM work_blocks WHERE date(started_at) >= ?",
-            (thirty_days_ago,),
+            f"""SELECT COUNT(*) AS n FROM work_blocks
+            WHERE date(started_at) >= ? {wb_provider_filter}""",
+            (thirty_days_ago, *provider_params),
         ).fetchone()
         wb_week = con.execute(
-            "SELECT COUNT(*) AS n FROM work_blocks WHERE date(started_at) >= ?",
-            (week_start,),
+            f"""SELECT COUNT(*) AS n FROM work_blocks
+            WHERE date(started_at) >= ? {wb_provider_filter}""",
+            (week_start, *provider_params),
         ).fetchone()
         wb_today = con.execute(
-            "SELECT COUNT(*) AS n FROM work_blocks WHERE date(started_at) = ?",
-            (today_str,),
+            f"""SELECT COUNT(*) AS n FROM work_blocks
+            WHERE date(started_at) = ? {wb_provider_filter}""",
+            (today_str, *provider_params),
         ).fetchone()
 
         return {
@@ -130,10 +209,64 @@ def get_overview_summary(db_path: Path) -> dict:
         con.close()
 
 
-def get_daily_cost_series(db_path: Path, days: int = 90) -> list[dict]:
-    """Daily cost with 7-day moving average.
+def get_data_freshness(db_path: Path) -> list[dict]:
+    """Provider-level data freshness for operational dashboard checks.
 
-    Uses daily_stats where project_name IS NULL (aggregate rows).
+    Returns one row for each known provider without exposing raw source paths.
+    """
+    providers = ("claude", "codex")
+    con = get_connection(db_path)
+    try:
+        session_rows = con.execute(
+            """SELECT
+                provider,
+                COUNT(*) AS session_count,
+                MAX(started_at) AS latest_session_at,
+                MAX(ingested_at) AS latest_session_ingested_at
+            FROM sessions
+            GROUP BY provider"""
+        ).fetchall()
+        ingest_rows = con.execute(
+            """SELECT
+                provider,
+                COUNT(*) AS file_count,
+                MAX(datetime(file_mtime, 'unixepoch')) AS latest_file_mtime,
+                MAX(ingested_at) AS latest_file_ingested_at
+            FROM ingest_log
+            GROUP BY provider"""
+        ).fetchall()
+
+        sessions_by_provider = {row["provider"]: row for row in session_rows}
+        ingest_by_provider = {row["provider"]: row for row in ingest_rows}
+
+        result = []
+        for item in providers:
+            session = sessions_by_provider.get(item)
+            ingest = ingest_by_provider.get(item)
+            result.append({
+                "provider": item,
+                "session_count": session["session_count"] if session else 0,
+                "latest_session_at": session["latest_session_at"] if session else None,
+                "latest_session_ingested_at": (
+                    session["latest_session_ingested_at"] if session else None
+                ),
+                "ingested_file_count": ingest["file_count"] if ingest else 0,
+                "latest_file_mtime": ingest["latest_file_mtime"] if ingest else None,
+                "latest_file_ingested_at": (
+                    ingest["latest_file_ingested_at"] if ingest else None
+                ),
+            })
+        return result
+    finally:
+        con.close()
+
+
+def get_daily_cost_series(
+    db_path: Path,
+    days: int = 90,
+    provider: str | None = None,
+) -> list[dict]:
+    """Daily cost with 7-day moving average.
 
     Returns:
         [{date, cost, cost_7d_avg}, ...]
@@ -141,12 +274,16 @@ def get_daily_cost_series(db_path: Path, days: int = 90) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT date, estimated_cost_usd AS cost
-            FROM daily_stats
-            WHERE project_name IS NULL AND date >= ?
+            f"""SELECT date(started_at) AS date,
+                      COALESCE(SUM(estimated_cost_usd), 0) AS cost
+            FROM sessions
+            WHERE date(started_at) >= ? {provider_filter}
+            GROUP BY date(started_at)
             ORDER BY date""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         # Build a date→cost map, then fill gaps with $0
@@ -181,7 +318,11 @@ def get_daily_cost_series(db_path: Path, days: int = 90) -> list[dict]:
         con.close()
 
 
-def get_weekly_session_counts(db_path: Path, weeks: int = 12) -> list[dict]:
+def get_weekly_session_counts(
+    db_path: Path,
+    weeks: int = 12,
+    provider: str | None = None,
+) -> list[dict]:
     """Session counts grouped by ISO week.
 
     Returns:
@@ -190,16 +331,18 @@ def get_weekly_session_counts(db_path: Path, weeks: int = 12) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 -- SQLite: date(started_at, 'weekday 0', '-6 days') gives Monday
                 date(started_at, 'weekday 1', '-7 days') AS week_start,
                 COUNT(*) AS session_count
             FROM sessions
-            WHERE date(started_at) >= ?
+            WHERE date(started_at) >= ? {provider_filter}
             GROUP BY week_start
             ORDER BY week_start""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         return [{"week_start": r["week_start"], "session_count": r["session_count"]} for r in rows]
@@ -207,7 +350,11 @@ def get_weekly_session_counts(db_path: Path, weeks: int = 12) -> list[dict]:
         con.close()
 
 
-def get_weekly_work_block_counts(db_path: Path, weeks: int = 12) -> list[dict]:
+def get_weekly_work_block_counts(
+    db_path: Path,
+    weeks: int = 12,
+    provider: str | None = None,
+) -> list[dict]:
     """Work block counts grouped by ISO week.
 
     Returns:
@@ -216,15 +363,17 @@ def get_weekly_work_block_counts(db_path: Path, weeks: int = 12) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 date(started_at, 'weekday 1', '-7 days') AS week_start,
                 COUNT(*) AS work_block_count
             FROM work_blocks
-            WHERE date(started_at) >= ?
+            WHERE date(started_at) >= ? {provider_filter}
             GROUP BY week_start
             ORDER BY week_start""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         return [
@@ -235,7 +384,7 @@ def get_weekly_work_block_counts(db_path: Path, weeks: int = 12) -> list[dict]:
         con.close()
 
 
-def get_cost_by_project(db_path: Path) -> list[dict]:
+def get_cost_by_project(db_path: Path, provider: str | None = None) -> list[dict]:
     """Total cost per project, sorted descending.
 
     Returns:
@@ -243,13 +392,17 @@ def get_cost_by_project(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 project_name,
                 COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
             FROM sessions
+            {where}
             GROUP BY project_name
-            ORDER BY total_cost DESC"""
+            ORDER BY total_cost DESC""",
+            params,
         ).fetchall()
 
         return [{"project_name": r["project_name"], "total_cost": r["total_cost"]} for r in rows]
@@ -257,7 +410,7 @@ def get_cost_by_project(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_token_breakdown(db_path: Path) -> dict:
+def get_token_breakdown(db_path: Path, provider: str | None = None) -> dict:
     """Total token counts across all sessions.
 
     Returns:
@@ -265,13 +418,17 @@ def get_token_breakdown(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         row = con.execute(
-            """SELECT
+            f"""SELECT
                 COALESCE(SUM(total_input_tokens), 0) AS input,
                 COALESCE(SUM(total_output_tokens), 0) AS output,
                 COALESCE(SUM(total_cache_read_tokens), 0) AS cache_read,
                 COALESCE(SUM(total_cache_creation_tokens), 0) AS cache_creation
-            FROM sessions"""
+            FROM sessions
+            {where}""",
+            params,
         ).fetchone()
 
         return {
@@ -284,7 +441,7 @@ def get_token_breakdown(db_path: Path) -> dict:
         con.close()
 
 
-def get_projects_table(db_path: Path) -> list[dict]:
+def get_projects_table(db_path: Path, provider: str | None = None) -> list[dict]:
     """Project summary table for the projects page.
 
     Returns:
@@ -293,19 +450,30 @@ def get_projects_table(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 project_name,
                 COUNT(*) AS session_count,
                 COALESCE(SUM(estimated_cost_usd), 0) AS total_cost,
                 COALESCE(AVG(estimated_cost_usd), 0) AS avg_cost_per_session,
-                COALESCE(SUM(duration_seconds), 0) AS total_duration_seconds,
+                COALESCE(SUM(CASE
+                    WHEN active_duration_seconds > 0 THEN active_duration_seconds
+                    ELSE 0
+                END), 0) AS total_duration_seconds,
+                COALESCE(AVG(CASE
+                    WHEN active_duration_seconds > 0 THEN active_duration_seconds
+                    ELSE NULL
+                END), 0) AS avg_active_duration_seconds,
                 COALESCE(SUM(total_input_tokens) + SUM(total_output_tokens)
                     + SUM(total_cache_read_tokens) + SUM(total_cache_creation_tokens), 0)
                     AS total_tokens
             FROM sessions
+            {where}
             GROUP BY project_name
-            ORDER BY total_cost DESC"""
+            ORDER BY total_cost DESC""",
+            params,
         ).fetchall()
 
         return [
@@ -315,6 +483,7 @@ def get_projects_table(db_path: Path) -> list[dict]:
                 "total_cost": r["total_cost"],
                 "avg_cost_per_session": r["avg_cost_per_session"],
                 "total_duration_seconds": r["total_duration_seconds"],
+                "avg_active_duration_seconds": r["avg_active_duration_seconds"],
                 "total_tokens": r["total_tokens"],
             }
             for r in rows
@@ -323,22 +492,30 @@ def get_projects_table(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_session_scatter_data(db_path: Path) -> list[dict]:
+def get_session_scatter_data(
+    db_path: Path,
+    provider: str | None = None,
+) -> list[dict]:
     """Scatter plot data: each session as a point.
 
     Returns:
-        [{session_id, project_name, estimated_cost_usd, started_at}, ...]
+        [{provider, session_id, project_name, estimated_cost_usd, started_at}, ...]
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT session_id, project_name, estimated_cost_usd, started_at
+            f"""SELECT provider, session_id, project_name, estimated_cost_usd, started_at
             FROM sessions
-            ORDER BY started_at"""
+            {where}
+            ORDER BY started_at""",
+            params,
         ).fetchall()
 
         return [
             {
+                "provider": r["provider"],
                 "session_id": r["session_id"],
                 "project_name": r["project_name"],
                 "estimated_cost_usd": r["estimated_cost_usd"],
@@ -350,12 +527,17 @@ def get_session_scatter_data(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[dict]:
+def get_sessions_list(
+    db_path: Path,
+    project_name: str | None = None,
+    provider: str | None = None,
+) -> list[dict]:
     """Session list for the sessions page.
 
     Args:
         db_path: Path to SQLite database.
         project_name: Optional filter by project name.
+        provider: Optional filter by provider.
 
     Returns:
         [{session_id, project_name, started_at, duration_seconds,
@@ -364,7 +546,7 @@ def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[di
     con = get_connection(db_path)
     try:
         query = """SELECT
-                s.session_id, s.project_name, s.started_at, s.duration_seconds,
+                s.provider, s.session_id, s.project_name, s.started_at, s.duration_seconds,
                 s.active_duration_seconds,
                 s.message_count, s.user_message_count, s.tool_call_count,
                 s.estimated_cost_usd, s.total_input_tokens, s.total_output_tokens,
@@ -372,21 +554,30 @@ def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[di
                 s.file_edit_count, s.file_write_count, s.compaction_count,
                 s.custom_title, s.tool_error_count,
                 (SELECT COUNT(*) FROM work_blocks wb
-                 WHERE wb.session_id = s.session_id) AS work_block_count
+                 WHERE wb.provider = s.provider
+                   AND wb.session_id = s.session_id) AS work_block_count
             FROM sessions s"""
-        params: tuple = ()
+        filters = []
+        params = []
 
         if project_name:
-            query += " WHERE s.project_name = ?"
-            params = (project_name,)
+            filters.append("s.project_name = ?")
+            params.append(project_name)
+        if provider:
+            filters.append("s.provider = ?")
+            params.append(provider)
+
+        if filters:
+            query += " WHERE " + " AND ".join(filters)
 
         query += " ORDER BY s.started_at DESC"
 
-        rows = con.execute(query, params).fetchall()
+        rows = con.execute(query, tuple(params)).fetchall()
 
         return [
             {
                 "session_id": r["session_id"],
+                "provider": r["provider"],
                 "project_name": r["project_name"],
                 "started_at": r["started_at"],
                 "duration_seconds": r["duration_seconds"],
@@ -411,7 +602,11 @@ def get_sessions_list(db_path: Path, project_name: str | None = None) -> list[di
         con.close()
 
 
-def get_session_detail(db_path: Path, session_id: str) -> dict | None:
+def get_session_detail(
+    db_path: Path,
+    session_id: str,
+    provider: str | None = None,
+) -> dict | None:
     """Full detail for a single session.
 
     Returns:
@@ -422,24 +617,44 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
     """
     con = get_connection(db_path)
     try:
-        session = con.execute(
-            "SELECT * FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
+        if provider is None:
+            session = con.execute(
+                """SELECT * FROM sessions
+                WHERE session_id = ?
+                ORDER BY CASE WHEN provider = 'claude' THEN 0 ELSE 1 END
+                LIMIT 1""",
+                (session_id,),
+            ).fetchone()
+        else:
+            session = con.execute(
+                "SELECT * FROM sessions WHERE provider = ? AND session_id = ?",
+                (provider, session_id),
+            ).fetchone()
 
         if session is None:
             return None
 
         detail = dict(session)
+        provider = detail["provider"]
+        max_turn_duration_ms = detail.get("max_turn_duration_ms") or 0
+        detail["turn_metrics_reliable"] = (
+            max_turn_duration_ms <= _TURN_WAIT_IDLE_THRESHOLD_MS
+        )
+        detail["turn_metrics_note"] = (
+            "Provider-reported turn waits include an idle gap over 30 minutes, "
+            "so turn wait totals are not summarized. Active time excludes this gap."
+            if not detail["turn_metrics_reliable"]
+            else None
+        )
 
         # Tool usage breakdown
         tool_rows = con.execute(
             """SELECT tool_name, COUNT(*) AS count
             FROM tool_calls
-            WHERE session_id = ?
+            WHERE provider = ? AND session_id = ?
             GROUP BY tool_name
             ORDER BY count DESC""",
-            (session_id,),
+            (provider, session_id),
         ).fetchall()
 
         detail["tool_usage"] = [
@@ -454,8 +669,8 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
         file_rows = con.execute(
             """SELECT tool_name, file_path
             FROM tool_calls
-            WHERE session_id = ? AND file_path IS NOT NULL""",
-            (session_id,),
+            WHERE provider = ? AND session_id = ? AND file_path IS NOT NULL""",
+            (provider, session_id),
         ).fetchall()
 
         files: dict[str, dict] = {}
@@ -483,8 +698,8 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
             """SELECT COUNT(DISTINCT file_path) AS unique_files,
                       COUNT(*) AS total_ops
             FROM tool_calls
-            WHERE session_id = ? AND file_path IS NOT NULL""",
-            (session_id,),
+            WHERE provider = ? AND session_id = ? AND file_path IS NOT NULL""",
+            (provider, session_id),
         ).fetchone()
         uf = focus_row["unique_files"] or 0
         to = focus_row["total_ops"] or 0
@@ -501,9 +716,9 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
         # First prompt length
         first_prompt = con.execute(
             """SELECT content_length FROM messages
-            WHERE session_id = ? AND role = 'user'
+            WHERE provider = ? AND session_id = ? AND role = 'user'
             ORDER BY id LIMIT 1""",
-            (session_id,),
+            (provider, session_id),
         ).fetchone()
         detail["first_prompt_len"] = (
             first_prompt["content_length"] if first_prompt else 0
@@ -514,9 +729,9 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
             """SELECT block_index, started_at, ended_at,
                       duration_seconds, message_count
             FROM work_blocks
-            WHERE session_id = ?
+            WHERE provider = ? AND session_id = ?
             ORDER BY block_index""",
-            (session_id,),
+            (provider, session_id),
         ).fetchall()
         detail["work_blocks"] = [
             {
@@ -532,14 +747,14 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
         # Error breakdown for this session
         if detail.get("tool_error_count") and detail["tool_error_count"] > 0:
             err_rows = con.execute(
-                """SELECT tool_name, command
+                """SELECT tool_name, command, description
                 FROM tool_calls
-                WHERE is_error = 1 AND session_id = ?""",
-                (session_id,),
+                WHERE is_error = 1 AND provider = ? AND session_id = ?""",
+                (provider, session_id),
             ).fetchall()
             categories: dict[str, int] = {}
             for r in err_rows:
-                cat = _categorize_error(r["tool_name"], r["command"])
+                cat = _categorize_error(r["tool_name"], r["command"], r["description"])
                 categories[cat] = categories.get(cat, 0) + 1
             err_list = [
                 {"category": cat, "count": count}
@@ -555,7 +770,7 @@ def get_session_detail(db_path: Path, session_id: str) -> dict | None:
         con.close()
 
 
-def get_tool_counts(db_path: Path) -> list[dict]:
+def get_tool_counts(db_path: Path, provider: str | None = None) -> list[dict]:
     """Total usage count per tool, sorted descending.
 
     Returns:
@@ -563,11 +778,15 @@ def get_tool_counts(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT tool_name, COUNT(*) AS count
+            f"""SELECT tool_name, COUNT(*) AS count
             FROM tool_calls
+            {where}
             GROUP BY tool_name
-            ORDER BY count DESC"""
+            ORDER BY count DESC""",
+            params,
         ).fetchall()
 
         return [{"tool_name": r["tool_name"], "count": r["count"]} for r in rows]
@@ -575,7 +794,11 @@ def get_tool_counts(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_tool_weekly(db_path: Path, weeks: int = 12) -> list[dict]:
+def get_tool_weekly(
+    db_path: Path,
+    weeks: int = 12,
+    provider: str | None = None,
+) -> list[dict]:
     """Tool usage grouped by week and tool name.
 
     Returns:
@@ -584,16 +807,18 @@ def get_tool_weekly(db_path: Path, weeks: int = 12) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(weeks=weeks)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 date(timestamp, 'weekday 1', '-7 days') AS week_start,
                 tool_name,
                 COUNT(*) AS count
             FROM tool_calls
-            WHERE date(timestamp) >= ?
+            WHERE date(timestamp) >= ? {provider_filter}
             GROUP BY week_start, tool_name
             ORDER BY week_start, count DESC""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         return [
@@ -604,7 +829,11 @@ def get_tool_weekly(db_path: Path, weeks: int = 12) -> list[dict]:
         con.close()
 
 
-def get_tool_daily(db_path: Path, days: int = 90) -> list[dict]:
+def get_tool_daily(
+    db_path: Path,
+    days: int = 90,
+    provider: str | None = None,
+) -> list[dict]:
     """Tool usage grouped by day and tool name.
 
     Returns:
@@ -613,16 +842,18 @@ def get_tool_daily(db_path: Path, days: int = 90) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 date(timestamp) AS date,
                 tool_name,
                 COUNT(*) AS count
             FROM tool_calls
-            WHERE date(timestamp) >= ?
+            WHERE date(timestamp) >= ? {provider_filter}
             GROUP BY date, tool_name
             ORDER BY date, count DESC""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         return [
@@ -633,7 +864,7 @@ def get_tool_daily(db_path: Path, days: int = 90) -> list[dict]:
         con.close()
 
 
-def get_effectiveness_summary(db_path: Path) -> dict:
+def get_effectiveness_summary(db_path: Path, provider: str | None = None) -> dict:
     """Effectiveness metrics aggregated across all sessions.
 
     Returns 9 metrics derived from exact token/tool counts, plus
@@ -644,8 +875,10 @@ def get_effectiveness_summary(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         row = con.execute(
-            """SELECT
+            f"""SELECT
                 COUNT(*) AS session_count,
                 COALESCE(SUM(total_cache_read_tokens), 0) AS total_cache_read,
                 COALESCE(SUM(total_input_tokens), 0) AS total_input,
@@ -663,12 +896,17 @@ def get_effectiveness_summary(db_path: Path) -> dict:
                 COALESCE(SUM(CASE WHEN rework_file_count > 0 THEN 1 ELSE 0 END), 0)
                     AS sessions_with_rework,
                 COALESCE(SUM(estimated_cost_usd), 0) AS total_cost
-            FROM sessions"""
+            FROM sessions
+            {where}""",
+            params,
         ).fetchone()
 
         n = row["session_count"]
         cache_read = row["total_cache_read"]
-        input_denom = row["total_input"] + cache_read + row["total_cache_creation"]
+        if provider and provider.lower() in OPENAI_PROVIDERS:
+            input_denom = row["total_input"] + row["total_cache_creation"]
+        else:
+            input_denom = row["total_input"] + cache_read + row["total_cache_creation"]
         edit_write = row["total_edits"] + row["total_writes"]
         io_total = row["total_input"] + row["total_output"]
         all_tokens = input_denom + row["total_output"]
@@ -678,13 +916,16 @@ def get_effectiveness_summary(db_path: Path) -> dict:
         # Categorize errors to compute iteration percentage
         iteration_errors = 0
         if total_errors > 0:
+            provider_filter = "AND provider = ?" if provider else ""
+            err_params = (provider,) if provider else ()
             err_rows = con.execute(
-                """SELECT tool_name, command
+                f"""SELECT tool_name, command, description
                 FROM tool_calls
-                WHERE is_error = 1"""
+                WHERE is_error = 1 {provider_filter}""",
+                err_params,
             ).fetchall()
             for r in err_rows:
-                cat = _categorize_error(r["tool_name"], r["command"])
+                cat = _categorize_error(r["tool_name"], r["command"], r["description"])
                 if cat in _ITERATION_CATEGORIES:
                     iteration_errors += 1
 
@@ -716,7 +957,11 @@ def get_effectiveness_summary(db_path: Path) -> dict:
         con.close()
 
 
-def get_effectiveness_trends(db_path: Path, days: int = 90) -> list[dict]:
+def get_effectiveness_trends(
+    db_path: Path,
+    days: int = 90,
+    provider: str | None = None,
+) -> list[dict]:
     """Per-session effectiveness metrics for trend charts.
 
     Returns:
@@ -726,8 +971,10 @@ def get_effectiveness_trends(db_path: Path, days: int = 90) -> list[dict]:
     con = get_connection(db_path)
     try:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff, provider) if provider else (cutoff,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 session_id,
                 started_at,
                 date(started_at) AS date,
@@ -739,18 +986,24 @@ def get_effectiveness_trends(db_path: Path, days: int = 90) -> list[dict]:
                 file_write_count,
                 compaction_count
             FROM sessions
-            WHERE date(started_at) >= ?
+            WHERE date(started_at) >= ? {provider_filter}
             ORDER BY started_at""",
-            (cutoff,),
+            params,
         ).fetchall()
 
         result = []
         for r in rows:
-            denom = (
-                (r["total_input_tokens"] or 0)
-                + (r["total_cache_read_tokens"] or 0)
-                + (r["total_cache_creation_tokens"] or 0)
-            )
+            if provider and provider.lower() in OPENAI_PROVIDERS:
+                denom = (
+                    (r["total_input_tokens"] or 0)
+                    + (r["total_cache_creation_tokens"] or 0)
+                )
+            else:
+                denom = (
+                    (r["total_input_tokens"] or 0)
+                    + (r["total_cache_read_tokens"] or 0)
+                    + (r["total_cache_creation_tokens"] or 0)
+                )
             cache_hit_rate = (
                 (r["total_cache_read_tokens"] or 0) / denom if denom > 0 else 0.0
             )
@@ -771,7 +1024,11 @@ def get_effectiveness_trends(db_path: Path, days: int = 90) -> list[dict]:
         con.close()
 
 
-def get_top_files(db_path: Path, limit: int = 20) -> list[dict]:
+def get_top_files(
+    db_path: Path,
+    limit: int = 20,
+    provider: str | None = None,
+) -> list[dict]:
     """Most-accessed files across all sessions.
 
     Categorizes tools: Read/Glob/Grep = read, Edit = edit, Write = write.
@@ -786,11 +1043,15 @@ def get_top_files(db_path: Path, limit: int = 20) -> list[dict]:
 
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT tool_name, file_path
+            f"""SELECT tool_name, file_path
             FROM tool_calls
             WHERE file_path IS NOT NULL
-                AND tool_name IN ('Read', 'Glob', 'Grep', 'Edit', 'Write')"""
+                AND tool_name IN ('Read', 'Glob', 'Grep', 'Edit', 'Write')
+                {provider_filter}""",
+            params,
         ).fetchall()
 
         files: dict[str, dict] = {}
@@ -816,7 +1077,11 @@ def get_top_files(db_path: Path, limit: int = 20) -> list[dict]:
         con.close()
 
 
-def get_top_bash_commands(db_path: Path, limit: int = 20) -> list[dict]:
+def get_top_bash_commands(
+    db_path: Path,
+    limit: int = 20,
+    provider: str | None = None,
+) -> list[dict]:
     """Most common Bash commands with error rates.
 
     Returns:
@@ -824,17 +1089,19 @@ def get_top_bash_commands(db_path: Path, limit: int = 20) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider, limit) if provider else (limit,)
         rows = con.execute(
-            """SELECT
+            f"""SELECT
                 command,
                 COUNT(*) AS count,
                 SUM(is_error) AS error_count
             FROM tool_calls
-            WHERE tool_name = 'Bash' AND command IS NOT NULL
+            WHERE tool_name = 'Bash' AND command IS NOT NULL {provider_filter}
             GROUP BY command
             ORDER BY count DESC
             LIMIT ?""",
-            (limit,),
+            params,
         ).fetchall()
 
         return [
@@ -858,7 +1125,7 @@ def get_top_bash_commands(db_path: Path, limit: int = 20) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def get_first_prompt_analysis(db_path: Path) -> dict:
+def get_first_prompt_analysis(db_path: Path, provider: str | None = None) -> dict:
     """Analyze correlation between first prompt length and session outcomes.
 
     Returns:
@@ -867,18 +1134,26 @@ def get_first_prompt_analysis(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND s.provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT s.session_id, s.estimated_cost_usd, s.tool_error_count,
+            f"""SELECT s.provider, s.session_id, s.estimated_cost_usd, s.tool_error_count,
                       s.file_edit_count + s.file_write_count AS edits,
                       m.content_length AS first_prompt_len
             FROM sessions s
-            JOIN messages m ON m.session_id = s.session_id
+            JOIN messages m
+              ON m.provider = s.provider
+             AND m.session_id = s.session_id
             WHERE m.role = 'user'
               AND m.id = (
                   SELECT MIN(id) FROM messages
-                  WHERE session_id = s.session_id AND role = 'user'
+                  WHERE provider = s.provider
+                    AND session_id = s.session_id
+                    AND role = 'user'
               )
-              AND m.content_length > 0"""
+              AND m.content_length > 0
+              {provider_filter}""",
+            params,
         ).fetchall()
 
         if not rows:
@@ -925,7 +1200,7 @@ def get_first_prompt_analysis(db_path: Path) -> dict:
         con.close()
 
 
-def get_cost_concentration(db_path: Path) -> dict:
+def get_cost_concentration(db_path: Path, provider: str | None = None) -> dict:
     """Cost distribution across sessions (Pareto analysis).
 
     Returns:
@@ -935,12 +1210,15 @@ def get_cost_concentration(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT session_id, project_name, estimated_cost_usd,
+            f"""SELECT provider, session_id, project_name, estimated_cost_usd,
                       custom_title, started_at
             FROM sessions
-            WHERE estimated_cost_usd > 0
-            ORDER BY estimated_cost_usd DESC"""
+            WHERE estimated_cost_usd > 0 {provider_filter}
+            ORDER BY estimated_cost_usd DESC""",
+            params,
         ).fetchall()
 
         if not rows:
@@ -952,6 +1230,7 @@ def get_cost_concentration(db_path: Path) -> dict:
         for r in rows:
             cumulative += r["estimated_cost_usd"]
             sessions.append({
+                "provider": r["provider"],
                 "session_id": r["session_id"],
                 "project_name": r["project_name"],
                 "cost": r["estimated_cost_usd"],
@@ -975,7 +1254,10 @@ def get_cost_concentration(db_path: Path) -> dict:
         con.close()
 
 
-def get_cost_per_edit_by_duration(db_path: Path) -> list[dict]:
+def get_cost_per_edit_by_duration(
+    db_path: Path,
+    provider: str | None = None,
+) -> list[dict]:
     """Cost per edit grouped by session duration bucket.
 
     Returns:
@@ -983,13 +1265,17 @@ def get_cost_per_edit_by_duration(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT active_duration_seconds AS duration_seconds,
+            f"""SELECT active_duration_seconds AS duration_seconds,
                       estimated_cost_usd,
                       file_edit_count + file_write_count AS edits
             FROM sessions
             WHERE (file_edit_count + file_write_count) > 0
-              AND estimated_cost_usd > 0"""
+              AND estimated_cost_usd > 0
+              {provider_filter}""",
+            params,
         ).fetchall()
 
         buckets_def = [
@@ -1018,36 +1304,43 @@ def get_cost_per_edit_by_duration(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_model_breakdown(db_path: Path) -> list[dict]:
+def get_model_breakdown(db_path: Path, provider: str | None = None) -> list[dict]:
     """Token usage and estimated cost per model.
 
     Returns:
-        [{model, msg_count, input_tokens, output_tokens, cache_tokens,
+        [{provider, model, msg_count, input_tokens, output_tokens, cache_tokens,
           estimated_cost}, ...]
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT model,
+            f"""SELECT provider,
+                      model,
                       COUNT(*) AS msg_count,
                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
                       COALESCE(SUM(cache_read_tokens), 0) AS cache_tokens
             FROM messages
-            WHERE model IS NOT NULL AND model != '<synthetic>'
-            GROUP BY model
-            ORDER BY SUM(output_tokens) DESC"""
+            WHERE model IS NOT NULL AND model != '<synthetic>' {provider_filter}
+            GROUP BY provider, model
+            ORDER BY SUM(output_tokens) DESC""",
+            params,
         ).fetchall()
 
         result = []
         for r in rows:
-            # Estimate cost at Sonnet rates
-            cost = (
-                r["input_tokens"] * 3 / 1e6
-                + r["output_tokens"] * 15 / 1e6
-                + r["cache_tokens"] * 0.3 / 1e6
+            provider = r["provider"] or "claude"
+            cost = estimate_cost(
+                r["input_tokens"],
+                r["output_tokens"],
+                cache_read_tokens=r["cache_tokens"],
+                model=r["model"],
+                provider=provider,
             )
             result.append({
+                "provider": provider,
                 "model": r["model"],
                 "model_short": r["model"].split("-202")[0] if "-202" in r["model"] else r["model"],
                 "msg_count": r["msg_count"],
@@ -1062,7 +1355,11 @@ def get_model_breakdown(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_tool_sequences(db_path: Path, limit: int = 15) -> list[dict]:
+def get_tool_sequences(
+    db_path: Path,
+    limit: int = 15,
+    provider: str | None = None,
+) -> list[dict]:
     """Most common tool→tool transitions.
 
     Returns:
@@ -1070,21 +1367,26 @@ def get_tool_sequences(db_path: Path, limit: int = 15) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT session_id, tool_name
+            f"""SELECT provider, session_id, tool_name
             FROM tool_calls
-            ORDER BY session_id, timestamp, id"""
+            {where}
+            ORDER BY provider, session_id, timestamp, id""",
+            params,
         ).fetchall()
 
         from collections import Counter
         transitions: Counter[tuple[str, str]] = Counter()
         prev_tool = None
-        prev_sess = None
+        prev_key = None
         for r in rows:
-            if r["session_id"] == prev_sess and prev_tool:
+            key = (r["provider"], r["session_id"])
+            if key == prev_key and prev_tool:
                 transitions[(prev_tool, r["tool_name"])] += 1
             prev_tool = r["tool_name"]
-            prev_sess = r["session_id"]
+            prev_key = key
 
         return [
             {"from_tool": a, "to_tool": b, "count": c}
@@ -1094,7 +1396,7 @@ def get_tool_sequences(db_path: Path, limit: int = 15) -> list[dict]:
         con.close()
 
 
-def get_time_patterns(db_path: Path) -> dict:
+def get_time_patterns(db_path: Path, provider: str | None = None) -> dict:
     """Work block start patterns by hour-of-day and day-of-week.
 
     Uses work_blocks table so patterns reflect actual sit-down coding time,
@@ -1106,23 +1408,29 @@ def get_time_patterns(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        where = "WHERE provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         hour_rows = con.execute(
-            """SELECT
+            f"""SELECT
                 CAST(substr(started_at, 12, 2) AS INTEGER) AS hour,
                 COUNT(*) AS count
             FROM work_blocks
+            {where}
             GROUP BY hour
-            ORDER BY hour"""
+            ORDER BY hour""",
+            params,
         ).fetchall()
 
         day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
         day_rows = con.execute(
-            """SELECT
+            f"""SELECT
                 CAST(strftime('%w', started_at) AS INTEGER) AS day_num,
                 COUNT(*) AS count
             FROM work_blocks
+            {where}
             GROUP BY day_num
-            ORDER BY day_num"""
+            ORDER BY day_num""",
+            params,
         ).fetchall()
 
         return {
@@ -1140,7 +1448,7 @@ def get_time_patterns(db_path: Path) -> dict:
         con.close()
 
 
-def get_user_response_times(db_path: Path) -> dict:
+def get_user_response_times(db_path: Path, provider: str | None = None) -> dict:
     """Distribution of user response times (gap between assistant and next user msg).
 
     Returns:
@@ -1149,20 +1457,24 @@ def get_user_response_times(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT session_id, role, timestamp
+            f"""SELECT provider, session_id, role, timestamp
             FROM messages
-            WHERE role IN ('user', 'assistant')
-            ORDER BY session_id, timestamp"""
+            WHERE role IN ('user', 'assistant') {provider_filter}
+            ORDER BY provider, session_id, timestamp""",
+            params,
         ).fetchall()
 
         from datetime import datetime as dt
         gaps = []
         prev_role = None
         prev_ts = None
-        prev_sess = None
+        prev_key = None
         for r in rows:
-            if (r["session_id"] == prev_sess
+            key = (r["provider"], r["session_id"])
+            if (key == prev_key
                     and r["role"] == "user"
                     and prev_role == "assistant"
                     and prev_ts):
@@ -1178,7 +1490,7 @@ def get_user_response_times(db_path: Path) -> dict:
                     pass
             prev_role = r["role"]
             prev_ts = r["timestamp"]
-            prev_sess = r["session_id"]
+            prev_key = key
 
         if not gaps:
             return {
@@ -1216,7 +1528,7 @@ def get_user_response_times(db_path: Path) -> dict:
         con.close()
 
 
-def get_thinking_stats(db_path: Path) -> dict:
+def get_thinking_stats(db_path: Path, provider: str | None = None) -> dict:
     """Thinking block analysis across sessions.
 
     Returns:
@@ -1228,17 +1540,22 @@ def get_thinking_stats(db_path: Path) -> dict:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT session_id, project_name, custom_title, started_at,
+            f"""SELECT provider, session_id, project_name, custom_title, started_at,
                       total_thinking_chars, thinking_message_count,
                       estimated_cost_usd, tool_error_count
             FROM sessions
-            WHERE total_thinking_chars > 0
-            ORDER BY total_thinking_chars DESC"""
+            WHERE total_thinking_chars > 0 {provider_filter}
+            ORDER BY total_thinking_chars DESC""",
+            params,
         ).fetchall()
 
+        where = "WHERE provider = ?" if provider else ""
         total_sessions = con.execute(
-            "SELECT COUNT(*) AS n FROM sessions"
+            f"SELECT COUNT(*) AS n FROM sessions {where}",
+            params,
         ).fetchone()["n"]
 
         total_chars = sum(r["total_thinking_chars"] for r in rows)
@@ -1250,6 +1567,7 @@ def get_thinking_stats(db_path: Path) -> dict:
             "avg_thinking_chars": total_chars / n if n > 0 else 0,
             "by_session": [
                 {
+                    "provider": r["provider"],
                     "session_id": r["session_id"],
                     "project_name": r["project_name"],
                     "custom_title": r["custom_title"],
@@ -1266,7 +1584,10 @@ def get_thinking_stats(db_path: Path) -> dict:
         con.close()
 
 
-def get_permission_mode_breakdown(db_path: Path) -> list[dict]:
+def get_permission_mode_breakdown(
+    db_path: Path,
+    provider: str | None = None,
+) -> list[dict]:
     """Permission mode distribution across sessions.
 
     Returns:
@@ -1274,12 +1595,15 @@ def get_permission_mode_breakdown(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT permission_mode, COUNT(*) AS count
+            f"""SELECT permission_mode, COUNT(*) AS count
             FROM sessions
-            WHERE permission_mode IS NOT NULL
+            WHERE permission_mode IS NOT NULL {provider_filter}
             GROUP BY permission_mode
-            ORDER BY count DESC"""
+            ORDER BY count DESC""",
+            params,
         ).fetchall()
 
         total = sum(r["count"] for r in rows)
@@ -1295,7 +1619,691 @@ def get_permission_mode_breakdown(db_path: Path) -> list[dict]:
         con.close()
 
 
-def get_error_breakdown(db_path: Path) -> list[dict]:
+def get_permission_friction_summary(
+    db_path: Path,
+    hours: int = 36,
+    provider: str | None = None,
+) -> dict:
+    """Recent permission and sandbox friction from normalized tool-call rows.
+
+    Counts explicit escalation/approval markers and permission-categorized tool
+    errors without returning raw command strings or tool output.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND s.provider = ?" if provider else ""
+        params = (cutoff.isoformat(), provider) if provider else (cutoff.isoformat(),)
+
+        sessions = con.execute(
+            f"""SELECT s.provider, s.session_id, s.project_name, s.started_at,
+                      s.tool_call_count, s.tool_error_count
+            FROM sessions s
+            WHERE s.started_at >= ? {provider_filter}""",
+            params,
+        ).fetchall()
+
+        calls = con.execute(
+            f"""SELECT tc.provider, tc.session_id, s.project_name, s.started_at,
+                      s.tool_call_count, s.tool_error_count,
+                      tc.tool_name, tc.command, tc.description, tc.is_error
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {provider_filter}
+            ORDER BY s.started_at DESC, tc.timestamp, tc.id""",
+            params,
+        ).fetchall()
+
+        session_meta = {
+            (row["provider"], row["session_id"]): row for row in sessions
+        }
+        session_counts: dict[tuple[str, str], dict] = {
+            key: {
+                "provider": row["provider"],
+                "session_id": row["session_id"],
+                "project_name": row["project_name"],
+                "started_at": row["started_at"],
+                "tool_call_count": row["tool_call_count"] or 0,
+                "tool_error_count": row["tool_error_count"] or 0,
+                "escalation_markers": 0,
+                "permission_errors": 0,
+                "unique_friction_calls": 0,
+            }
+            for key, row in session_meta.items()
+        }
+
+        provider_counts: dict[str, int] = {}
+        project_counts: dict[str, int] = {}
+        command_family_counts: dict[str, int] = {}
+        permission_error_family_counts: dict[str, int] = {}
+        cause_counts: dict[str, dict] = {}
+        allowlist_candidate_counts: dict[str, dict] = {}
+        keep_on_request_counts: dict[str, dict] = {}
+        escalation_count = 0
+        permission_error_count = 0
+        unique_friction_count = 0
+        no_prefix_rule_escalations = 0
+        sessions_with_friction: set[tuple[str, str]] = set()
+
+        for row in calls:
+            is_escalation = _has_escalation_marker(
+                row["command"], row["description"],
+            )
+            is_permission_error = bool(row["is_error"]) and _categorize_error(
+                row["tool_name"], row["command"], row["description"],
+            ) == "Permission"
+            if not is_escalation and not is_permission_error:
+                continue
+
+            key = (row["provider"], row["session_id"])
+            sessions_with_friction.add(key)
+            unique_friction_count += 1
+            provider_counts[row["provider"]] = provider_counts.get(row["provider"], 0) + 1
+            project_counts[row["project_name"]] = project_counts.get(row["project_name"], 0) + 1
+
+            family = _command_family(row["command"])
+            command_family_counts[family] = command_family_counts.get(family, 0) + 1
+            for cause in _permission_friction_causes(
+                row["command"],
+                row["description"],
+                family=family,
+                is_escalation=is_escalation,
+            ):
+                _increment_cause_bucket(cause_counts, cause)
+            if key in session_counts:
+                session_counts[key]["unique_friction_calls"] += 1
+
+            if is_escalation:
+                escalation_count += 1
+                if key in session_counts:
+                    session_counts[key]["escalation_markers"] += 1
+                if _extract_prefix_rule(row["description"]) is None:
+                    no_prefix_rule_escalations += 1
+                    candidate = _allowlist_candidate(row["command"])
+                    if candidate is None:
+                        _increment_policy_bucket(
+                            keep_on_request_counts,
+                            family,
+                            "Keep this command family on-request; it can scan broadly, "
+                            "mutate files, run arbitrary code, or touch external/system resources.",
+                        )
+                    else:
+                        _increment_policy_bucket(
+                            allowlist_candidate_counts,
+                            candidate["prefix_rule"],
+                            candidate["reason"],
+                        )
+
+            if is_permission_error:
+                permission_error_count += 1
+                permission_error_family_counts[family] = (
+                    permission_error_family_counts.get(family, 0) + 1
+                )
+                if key in session_counts:
+                    session_counts[key]["permission_errors"] += 1
+
+        top_sessions = [
+            value for value in session_counts.values()
+            if value["unique_friction_calls"] > 0
+        ]
+        top_sessions.sort(
+            key=lambda item: (
+                item["unique_friction_calls"],
+                item["permission_errors"],
+                item["tool_error_count"],
+            ),
+            reverse=True,
+        )
+
+        total_tool_calls = sum(row["tool_call_count"] or 0 for row in sessions)
+        session_total = len(sessions)
+        return {
+            "window_hours": hours,
+            "session_count": session_total,
+            "tool_call_count": total_tool_calls,
+            "unique_friction_calls": unique_friction_count,
+            "escalation_markers": escalation_count,
+            "permission_errors": permission_error_count,
+            "sessions_with_friction": len(sessions_with_friction),
+            "friction_rate_per_session": (
+                unique_friction_count / session_total if session_total > 0 else 0.0
+            ),
+            "friction_rate_per_100_tool_calls": (
+                unique_friction_count / total_tool_calls * 100
+                if total_tool_calls > 0 else 0.0
+            ),
+            "no_prefix_rule_escalations": no_prefix_rule_escalations,
+            "cause_breakdown": _policy_rows(cause_counts)[:8],
+            "allowlist_candidates": _policy_rows(allowlist_candidate_counts)[:6],
+            "keep_on_request": _policy_rows(keep_on_request_counts)[:6],
+            "provider_breakdown": _counter_rows(provider_counts, "provider"),
+            "project_breakdown": _counter_rows(project_counts, "project_name")[:8],
+            "command_families": _counter_rows(command_family_counts, "family")[:10],
+            "permission_error_families": _counter_rows(
+                permission_error_family_counts, "family",
+            )[:10],
+            "top_sessions": top_sessions[:8],
+        }
+    finally:
+        con.close()
+
+
+def get_investigation_queue(
+    db_path: Path,
+    hours: int = 36,
+    provider: str | None = None,
+    limit: int = 12,
+) -> list[dict]:
+    """Rank recent sessions that most deserve manual review.
+
+    This intentionally uses only normalized aggregate signals and error
+    categories. It does not expose raw commands, prompts, or tool output.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND provider = ?" if provider else ""
+        session_params = (
+            (cutoff.isoformat(), provider) if provider else (cutoff.isoformat(),)
+        )
+        sessions = con.execute(
+            f"""SELECT provider, session_id, project_path, project_name,
+                      custom_title, started_at,
+                      estimated_cost_usd, tool_call_count, tool_error_count,
+                      file_edit_count, file_write_count, active_duration_seconds,
+                      duration_seconds
+            FROM sessions
+            WHERE started_at >= ? {provider_filter}""",
+            session_params,
+        ).fetchall()
+
+        if not sessions:
+            return []
+
+        session_map = {
+            (row["provider"], row["session_id"]): dict(row) for row in sessions
+        }
+        metrics: dict[tuple[str, str], dict] = {
+            key: {
+                "permission_friction": 0,
+                "permission_errors": 0,
+                "file_access_errors": 0,
+                "edit_mismatch_errors": 0,
+                "edit_calls_without_paths": 0,
+                "iteration_errors": 0,
+                "other_errors": 0,
+                "no_prefix_rule_escalations": 0,
+                "causes": Counter(),
+            }
+            for key in session_map
+        }
+
+        call_provider_filter = "AND s.provider = ?" if provider else ""
+        calls = con.execute(
+            f"""SELECT tc.provider, tc.session_id, tc.tool_name, tc.file_path,
+                      tc.command, tc.description, tc.is_error
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {call_provider_filter}""",
+            session_params,
+        ).fetchall()
+
+        for row in calls:
+            key = (row["provider"], row["session_id"])
+            if key not in metrics:
+                continue
+
+            if row["tool_name"] in ("Edit", "Write") and row["file_path"] is None:
+                metrics[key]["edit_calls_without_paths"] += 1
+
+            is_escalation = _has_escalation_marker(
+                row["command"], row["description"],
+            )
+            category = None
+            is_permission_error = False
+            if row["is_error"]:
+                category = _categorize_error(
+                    row["tool_name"], row["command"], row["description"],
+                )
+                is_permission_error = category == "Permission"
+
+            if is_escalation or is_permission_error:
+                metrics[key]["permission_friction"] += 1
+                for cause in _permission_friction_causes(
+                    row["command"],
+                    row["description"],
+                    family=_command_family(row["command"]),
+                    is_escalation=is_escalation,
+                ):
+                    metrics[key]["causes"][cause["label"]] += 1
+
+            if is_escalation:
+                if _extract_prefix_rule(row["description"]) is None:
+                    metrics[key]["no_prefix_rule_escalations"] += 1
+
+            if not row["is_error"]:
+                continue
+
+            if category == "Permission":
+                metrics[key]["permission_errors"] += 1
+            elif category == "File Access":
+                metrics[key]["file_access_errors"] += 1
+            elif category == "Edit Mismatch":
+                metrics[key]["edit_mismatch_errors"] += 1
+            elif category in _ITERATION_CATEGORIES:
+                metrics[key]["iteration_errors"] += 1
+            else:
+                metrics[key]["other_errors"] += 1
+
+        rows = []
+        for key, session in session_map.items():
+            item_metrics = metrics[key]
+            edits = (session["file_edit_count"] or 0) + (
+                session["file_write_count"] or 0
+            )
+            active_seconds = session["active_duration_seconds"] or 0
+            cost = session["estimated_cost_usd"] or 0.0
+            cost_per_edit = cost / edits if edits > 0 else 0.0
+            flags, score = _investigation_flags(
+                session,
+                item_metrics,
+                edits=edits,
+                active_seconds=active_seconds,
+                cost_per_edit=cost_per_edit,
+            )
+            if score <= 0:
+                continue
+            rows.append({
+                "provider": session["provider"],
+                "session_id": session["session_id"],
+                "project_name": session["project_name"],
+                "custom_title": session["custom_title"],
+                "started_at": session["started_at"],
+                "score": score,
+                "flags": flags,
+                "causes": [
+                    {"label": label, "count": count}
+                    for label, count in item_metrics["causes"].most_common(4)
+                ],
+                "permission_friction": item_metrics["permission_friction"],
+                "file_access_errors": item_metrics["file_access_errors"],
+                "other_errors": item_metrics["other_errors"],
+                "edit_calls_without_paths": item_metrics["edit_calls_without_paths"],
+                "tool_error_count": session["tool_error_count"] or 0,
+                "tool_call_count": session["tool_call_count"] or 0,
+                "edits": edits,
+                "active_duration_seconds": active_seconds,
+                "cost_per_edit": cost_per_edit,
+            })
+
+        rows.sort(
+            key=lambda row: (
+                row["score"],
+                row["permission_friction"],
+                row["tool_error_count"],
+            ),
+            reverse=True,
+        )
+        return rows[:limit]
+    finally:
+        con.close()
+
+
+def _investigation_flags(
+    session: dict,
+    metrics: dict,
+    edits: int,
+    active_seconds: int,
+    cost_per_edit: float,
+) -> tuple[list[dict], int]:
+    flags = []
+    score = 0
+    tool_calls = session["tool_call_count"] or 0
+    total_errors = session["tool_error_count"] or 0
+    duration_seconds = session["duration_seconds"] or 0
+    cost = session["estimated_cost_usd"] or 0.0
+
+    if metrics["permission_friction"] >= 3:
+        score += min(metrics["permission_friction"] * 3, 30)
+        flags.append({
+            "label": f"{metrics['permission_friction']} permission friction",
+            "tone": "amber",
+        })
+    if metrics["no_prefix_rule_escalations"] >= 2:
+        score += min(metrics["no_prefix_rule_escalations"] * 2, 12)
+        flags.append({
+            "label": "missing prefix rules",
+            "tone": "amber",
+        })
+    if metrics["permission_errors"] >= 2:
+        score += min(metrics["permission_errors"] * 4, 20)
+        flags.append({
+            "label": f"{metrics['permission_errors']} permission errors",
+            "tone": "red",
+        })
+    if metrics["file_access_errors"] >= 5:
+        score += min(metrics["file_access_errors"], 15)
+        flags.append({
+            "label": f"{metrics['file_access_errors']} file access errors",
+            "tone": "red",
+        })
+    if metrics["edit_mismatch_errors"] >= 3:
+        score += min(metrics["edit_mismatch_errors"] * 2, 16)
+        flags.append({
+            "label": f"{metrics['edit_mismatch_errors']} edit mismatches",
+            "tone": "red",
+        })
+    if metrics["edit_calls_without_paths"] >= 2:
+        score += min(metrics["edit_calls_without_paths"] * 4, 20)
+        flags.append({
+            "label": f"{metrics['edit_calls_without_paths']} edits missing paths",
+            "tone": "red",
+        })
+    if metrics["other_errors"] >= 3:
+        score += min(metrics["other_errors"] * 2, 20)
+        flags.append({
+            "label": f"{metrics['other_errors']} Other errors",
+            "tone": "amber",
+        })
+    if total_errors >= 50:
+        score += min(total_errors // 10, 20)
+        flags.append({
+            "label": f"{total_errors} total errors",
+            "tone": "red",
+        })
+    if tool_calls >= 20 and edits == 0:
+        score += 10
+        flags.append({"label": "no edits", "tone": "gray"})
+    if edits == 0 and cost >= _EXPENSIVE_NO_EDIT_COST_USD:
+        score += min(int(cost * 5), 20)
+        flags.append({"label": "expensive no-edit", "tone": "amber"})
+    if active_seconds == 0 and tool_calls >= 10:
+        score += 8
+        flags.append({"label": "zero active time", "tone": "gray"})
+    elif (
+        tool_calls >= 10
+        and active_seconds <= _LOW_ACTIVE_TIME_SECONDS
+        and (
+            duration_seconds == 0
+            or active_seconds / max(duration_seconds, 1) <= _LOW_ACTIVE_TIME_RATIO
+        )
+    ):
+        score += 6
+        flags.append({"label": "low active time", "tone": "gray"})
+    if cost_per_edit >= 5:
+        score += min(int(cost_per_edit), 20)
+        flags.append({"label": "high cost/edit", "tone": "amber"})
+    if _weak_project_attribution(session):
+        score += 5
+        flags.append({"label": "weak attribution", "tone": "gray"})
+
+    return flags, score
+
+
+def _weak_project_attribution(session: dict) -> bool:
+    project_name = (session["project_name"] or "").strip().lower()
+    project_path = (session["project_path"] or "").strip()
+    if not project_name or project_name in _WEAK_PROJECT_NAMES:
+        return True
+    if project_name in {"unknown", "untitled", "sessions"}:
+        return True
+    if project_path.endswith("/.codex") or project_path.endswith("/.claude"):
+        return True
+    return False
+
+
+def _has_escalation_marker(command: str | None, description: str | None) -> bool:
+    text = " ".join(part for part in (command, description) if part).lower()
+    return any(marker in text for marker in _ESCALATION_MARKERS)
+
+
+def _extract_prefix_rule(description: str | None) -> str | None:
+    if not description or "prefix_rule=" not in description:
+        return None
+    value = description.split("prefix_rule=", 1)[1].split(";", 1)[0].strip()
+    try:
+        parsed = ast.literal_eval(value)
+    except (SyntaxError, ValueError):
+        return value or None
+    if isinstance(parsed, list):
+        return " ".join(str(part) for part in parsed)
+    return str(parsed) if parsed is not None else None
+
+
+def _command_family(command: str | None) -> str:
+    if not command:
+        return "no command"
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        parts = command.split()
+    parts = _strip_env_assignments(parts)
+    if not parts:
+        return "env"
+
+    first = _Path(parts[0]).name
+    if first in {"python", "python3"} and len(parts) > 2 and parts[1] == "-m":
+        return f"python -m {parts[2]}"
+    if first == "uv" and len(parts) > 1:
+        return f"uv {parts[1]}"
+    if first in {"npm", "yarn", "pnpm"} and len(parts) > 1:
+        if parts[1] == "--workspace" and len(parts) > 3:
+            return f"{first} --workspace {parts[3]}"
+        return f"{first} {parts[1]}"
+    if first == "git" and len(parts) > 1:
+        return f"git {parts[1]}"
+    if first in {"gh", "railway", "modal", "make", "just"} and len(parts) > 1:
+        return f"{first} {parts[1]}"
+    return first
+
+
+def _allowlist_candidate(command: str | None) -> dict | None:
+    if not command:
+        return None
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    parts = _strip_env_assignments(parts)
+    if not parts:
+        return None
+
+    first = _Path(parts[0]).name
+    if first == "uv" and len(parts) >= 3 and parts[1] == "run":
+        if parts[2] == "pytest":
+            return {
+                "prefix_rule": "uv run pytest",
+                "reason": "Project test command; repeat approvals are usually low-value friction.",
+            }
+        if parts[2] == "ruff":
+            return {
+                "prefix_rule": "uv run ruff",
+                "reason": "Project lint command; deterministic and repo-local in normal use.",
+            }
+
+    if first in {"pytest", "ruff"}:
+        return {
+            "prefix_rule": first,
+            "reason": "Direct test/lint command; deterministic and repo-local in normal use.",
+        }
+
+    if first in {"just", "make"} and len(parts) >= 2 and parts[1] in {
+        "check", "test", "lint",
+    }:
+        return {
+            "prefix_rule": f"{first} {parts[1]}",
+            "reason": "Named project verification task.",
+        }
+
+    if first in {"npm", "yarn", "pnpm"}:
+        script = _npm_script_name(parts)
+        if script in {"build", "check", "lint", "test", "typecheck"}:
+            return {
+                "prefix_rule": f"{first} run {script}",
+                "reason": "Package verification script; useful to persist when run repeatedly.",
+            }
+
+    return None
+
+
+def _permission_friction_causes(
+    command: str | None,
+    description: str | None,
+    family: str | None = None,
+    is_escalation: bool = False,
+) -> list[dict]:
+    family = family or _command_family(command)
+    text = " ".join(part for part in (command, description) if part).lower()
+    causes = []
+
+    if is_escalation and _extract_prefix_rule(description) is None:
+        causes.append({
+            "label": "missing prefix rule",
+            "reason": "Escalation did not include a reusable narrow prefix rule.",
+        })
+    if family in _VERIFICATION_FAMILIES or _allowlist_candidate(command) is not None:
+        causes.append({
+            "label": "verification command",
+            "reason": "Test, lint, build, or check command.",
+        })
+    elif family in _BROAD_SEARCH_FAMILIES:
+        causes.append({
+            "label": "broad search",
+            "reason": "Search command that may cross repo or sandbox boundaries.",
+        })
+    elif family in _MUTATION_FAMILIES:
+        causes.append({
+            "label": "mutation command",
+            "reason": "Command family can edit, copy, or execute arbitrary code.",
+        })
+
+    if family in _BROWSER_SYSTEM_FAMILIES or _contains_browser_system_text(text):
+        _append_cause_once(causes, {
+            "label": "browser/system access",
+            "reason": "Command touches browser, process, OS, or system-control surfaces.",
+        })
+    if family in _EXTERNAL_SERVICE_FAMILIES or _contains_external_service_text(text):
+        _append_cause_once(causes, {
+            "label": "external service",
+            "reason": "Command talks to a network, hosted service, or external CLI.",
+        })
+
+    if _contains_cache_or_home_text(text):
+        causes.append({
+            "label": "cache/home access",
+            "reason": "Command references home-directory or package-cache locations.",
+        })
+
+    if not causes:
+        causes.append({
+            "label": "other permission friction",
+            "reason": "Permission-related event outside common command families.",
+        })
+
+    return causes
+
+
+def _append_cause_once(causes: list[dict], cause: dict) -> None:
+    if not any(item["label"] == cause["label"] for item in causes):
+        causes.append(cause)
+
+
+def _contains_browser_system_text(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "chrome", "playwright", "browser", "launchctl", "osascript",
+            "system_chrome", "lsof", "pgrep",
+        )
+    )
+
+
+def _contains_external_service_text(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "http://", "https://", "railway", "vercel", "github", "gh ",
+            "curl ", "wget ", "ssh ", "scp ",
+        )
+    )
+
+
+def _contains_cache_or_home_text(text: str) -> bool:
+    return any(
+        token in text
+        for token in (
+            "~/.cache", "/.cache/", "/users/", "$home", "node_modules",
+            ".venv", "/site-packages/",
+        )
+    )
+
+
+def _npm_script_name(parts: list[str]) -> str | None:
+    if len(parts) >= 3 and parts[1] == "run":
+        return parts[2]
+    if len(parts) >= 5 and parts[1] == "--workspace" and parts[3] == "run":
+        return parts[4]
+    return None
+
+
+def _strip_env_assignments(parts: list[str]) -> list[str]:
+    index = 0
+    if parts and parts[0] == "env":
+        index = 1
+    while index < len(parts) and _looks_env_assignment(parts[index]):
+        index += 1
+    return parts[index:]
+
+
+def _looks_env_assignment(value: str) -> bool:
+    if "=" not in value or value.startswith("="):
+        return False
+    key = value.split("=", 1)[0]
+    return key.replace("_", "").isalnum()
+
+
+def _counter_rows(counts: dict[str, int], label_key: str) -> list[dict]:
+    total = sum(counts.values())
+    rows = [
+        {label_key: key, "count": count, "pct": count / total if total else 0.0}
+        for key, count in counts.items()
+    ]
+    rows.sort(key=lambda row: row["count"], reverse=True)
+    return rows
+
+
+def _increment_policy_bucket(
+    buckets: dict[str, dict],
+    key: str,
+    reason: str,
+) -> None:
+    if key not in buckets:
+        buckets[key] = {"label": key, "reason": reason, "count": 0}
+    buckets[key]["count"] += 1
+
+
+def _increment_cause_bucket(buckets: dict[str, dict], cause: dict) -> None:
+    label = cause["label"]
+    if label not in buckets:
+        buckets[label] = {
+            "label": label,
+            "reason": cause["reason"],
+            "count": 0,
+        }
+    buckets[label]["count"] += 1
+
+
+def _policy_rows(buckets: dict[str, dict]) -> list[dict]:
+    rows = list(buckets.values())
+    rows.sort(key=lambda row: row["count"], reverse=True)
+    return rows
+
+
+def get_error_breakdown(db_path: Path, provider: str | None = None) -> list[dict]:
     """Categorized error breakdown across all sessions.
 
     Returns:
@@ -1304,10 +2312,13 @@ def get_error_breakdown(db_path: Path) -> list[dict]:
     """
     con = get_connection(db_path)
     try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (provider,) if provider else ()
         rows = con.execute(
-            """SELECT tool_name, command
+            f"""SELECT tool_name, command, description
             FROM tool_calls
-            WHERE is_error = 1"""
+            WHERE is_error = 1 {provider_filter}""",
+            params,
         ).fetchall()
 
         if not rows:
@@ -1315,7 +2326,7 @@ def get_error_breakdown(db_path: Path) -> list[dict]:
 
         categories: dict[str, int] = {}
         for r in rows:
-            cat = _categorize_error(r["tool_name"], r["command"])
+            cat = _categorize_error(r["tool_name"], r["command"], r["description"])
             categories[cat] = categories.get(cat, 0) + 1
 
         total = sum(categories.values())
@@ -1330,7 +2341,9 @@ def get_error_breakdown(db_path: Path) -> list[dict]:
 
 
 def get_error_breakdown_for_session(
-    db_path: Path, session_id: str,
+    db_path: Path,
+    session_id: str,
+    provider: str = "claude",
 ) -> list[dict]:
     """Categorized error breakdown for a single session.
 
@@ -1340,10 +2353,10 @@ def get_error_breakdown_for_session(
     con = get_connection(db_path)
     try:
         rows = con.execute(
-            """SELECT tool_name, command
+            """SELECT tool_name, command, description
             FROM tool_calls
-            WHERE is_error = 1 AND session_id = ?""",
-            (session_id,),
+            WHERE is_error = 1 AND provider = ? AND session_id = ?""",
+            (provider, session_id),
         ).fetchall()
 
         if not rows:
@@ -1351,7 +2364,7 @@ def get_error_breakdown_for_session(
 
         categories: dict[str, int] = {}
         for r in rows:
-            cat = _categorize_error(r["tool_name"], r["command"])
+            cat = _categorize_error(r["tool_name"], r["command"], r["description"])
             categories[cat] = categories.get(cat, 0) + 1
 
         result = [

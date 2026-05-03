@@ -1,4 +1,4 @@
-"""Rules engine for CLAUDE.md improvement suggestions.
+"""Rules engine for project instruction improvement suggestions.
 
 Each rule inspects session data and produces zero or more suggestions.
 All rules are heuristic-based — no LLM calls.
@@ -14,6 +14,7 @@ def generate_suggestions(
     cache_efficiency: CacheEfficiency,
     compaction_count: int,
     tool_call_count: int,
+    instruction_target: str = "CLAUDE.md",
 ) -> list[ClaudeMdSuggestion]:
     """Run all suggestion rules and return combined results."""
     suggestions: list[ClaudeMdSuggestion] = []
@@ -28,7 +29,8 @@ def generate_suggestions(
                 priority="high",
                 suggestion=(
                     f"File `{f['file_path']}` was read {f['read_count']} times "
-                    f"this session. Consider adding its key types/exports to CLAUDE.md."
+                    f"this session. Consider adding its key types/exports to "
+                    f"{instruction_target}."
                 ),
                 evidence=f"Read {f['read_count']}x, edited {f['edit_count']}x",
             )
@@ -42,8 +44,9 @@ def generate_suggestions(
                 priority="medium",
                 suggestion=(
                     "Cache hit rate was {:.0%}. Adding more project context "
-                    "to CLAUDE.md can improve cache reuse.".format(
-                        cache_efficiency.cache_hit_rate
+                    "to {} can improve cache reuse.".format(
+                        cache_efficiency.cache_hit_rate,
+                        instruction_target,
                     )
                 ),
                 evidence=(
@@ -76,7 +79,7 @@ def generate_suggestions(
                 priority="low",
                 suggestion=(
                     f"Session made {tool_call_count} tool calls. If many are "
-                    f"exploratory reads, adding a project map to CLAUDE.md can "
+                    f"exploratory reads, adding a project map to {instruction_target} can "
                     f"reduce unnecessary file exploration."
                 ),
                 evidence=f"{tool_call_count} total tool calls",

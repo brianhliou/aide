@@ -63,6 +63,7 @@ def _render_header(summary: SessionSummary) -> str:
         "| Field | Value |",
         "|-------|-------|",
         f"| **Project** | {summary.project_name} |",
+        f"| **Provider** | {summary.provider} |",
         f"| **Date** | {date} |",
         f"| **Duration** | {duration} |",
         f"| **Cost** | ${summary.estimated_cost_usd:.2f} |",
@@ -258,7 +259,7 @@ def _priority_badge(priority: str) -> str:
 def _render_suggestions(suggestions: SuggestionsReport) -> str:
     """Render Section 4: Suggestions."""
     lines = [
-        "## 4. CLAUDE.md Suggestions",
+        f"## 4. {suggestions.instruction_target} Suggestions",
         "",
     ]
 

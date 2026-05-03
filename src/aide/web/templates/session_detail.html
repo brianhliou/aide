@@ -5,7 +5,7 @@
 {% block content %}
 <!-- Back link -->
 <div class="mb-6">
-    <a href="/sessions{% if detail.project_name %}?project={{ detail.project_name }}{% endif %}"
+    <a href="{{ url_for('dashboard.sessions', project=detail.project_name, provider=detail.provider) if detail.project_name else url_for('dashboard.sessions', provider=detail.provider) }}"
        class="text-sm text-blue-600 hover:text-blue-800 font-medium">
         &larr; Back to sessions
     </a>
@@ -21,6 +21,7 @@
         {% endif %}
         <span class="text-gray-400 font-normal">&middot;</span>
         <span class="text-gray-600">{{ detail.project_name }}</span>
+        <span class="ml-2 align-middle inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">{{ detail.provider }}</span>
     </h1>
     {% if detail.custom_title %}
     <p class="text-sm text-gray-500 mt-1">{{ detail.started_at[:10] }} {{ detail.started_at[11:16] }}</p>
@@ -158,7 +159,15 @@
 <!-- Turn Metrics -->
 {% if detail.turn_count and detail.turn_count > 0 %}
 <div class="bg-white rounded-lg shadow p-6 mb-6">
-    <h2 class="text-lg font-semibold text-gray-900 mb-4">Turns</h2>
+    <div class="flex items-start justify-between gap-4 mb-4">
+        <h2 class="text-lg font-semibold text-gray-900">Turns</h2>
+        <span class="text-xs text-gray-500">Provider-reported</span>
+    </div>
+    {% if not detail.turn_metrics_reliable %}
+    <div class="mb-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        {{ detail.turn_metrics_note }}
+    </div>
+    {% endif %}
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Turn Count</div>
@@ -167,24 +176,30 @@
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Total Wait</div>
             <div class="text-2xl font-bold text-gray-900">
+                {% if detail.turn_metrics_reliable %}
                 {% set total_s = detail.total_turn_duration_ms // 1000 %}
                 {% set t_min = total_s // 60 %}
                 {% set t_sec = total_s % 60 %}
                 {% if t_min > 0 %}{{ t_min }}m {{ t_sec }}s{% else %}{{ t_sec }}s{% endif %}
+                {% else %}&mdash;{% endif %}
             </div>
         </div>
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Avg Turn</div>
             <div class="text-2xl font-bold text-gray-900">
+                {% if detail.turn_metrics_reliable %}
                 {% set avg_s = (detail.total_turn_duration_ms // detail.turn_count) // 1000 %}
                 {{ avg_s }}s
+                {% else %}&mdash;{% endif %}
             </div>
         </div>
         <div>
             <div class="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">Max Turn</div>
             <div class="text-2xl font-bold text-gray-900">
+                {% if detail.turn_metrics_reliable %}
                 {% set max_s = detail.max_turn_duration_ms // 1000 %}
                 {% if max_s >= 60 %}{{ max_s // 60 }}m {{ max_s % 60 }}s{% else %}{{ max_s }}s{% endif %}
+                {% else %}&mdash;{% endif %}
             </div>
         </div>
     </div>
