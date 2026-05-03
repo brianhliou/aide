@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from aide.artifacts import list_artifacts
+from aide.artifacts import get_artifact, list_artifacts, propose_artifact
 from aide.cli import (
     archive_jsonl,
     backup_redacted_sources,
@@ -18,7 +18,7 @@ from aide.cli import (
 from aide.config import AideConfig, LogSource
 from aide.db import get_summary_stats, ingest_sessions, init_db
 from aide.jobs import LaunchdJobStatus
-from aide.models import ParsedMessage, ParsedSession, ToolCall
+from aide.models import ParsedMessage, ParsedSession, SemanticArtifact, ToolCall
 from aide.redaction import RedactionAuditResult
 
 
@@ -80,6 +80,22 @@ def _digest_session() -> ParsedSession:
         file_write_count=0,
         file_edit_count=0,
         bash_count=1,
+    )
+
+
+def _semantic_artifact(project_name: str = "aide") -> SemanticArtifact:
+    now = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    return SemanticArtifact(
+        project_name=project_name,
+        project_path=f"/Users/test/projects/{project_name}",
+        artifact_type="verification_recipe",
+        title="Run full check",
+        body="Use just check before committing.",
+        confidence="high",
+        source_provider="codex",
+        source_session_id="digest-1",
+        first_seen_at=now,
+        last_seen_at=now,
     )
 
 
@@ -598,3 +614,120 @@ class TestDigestCommand:
 
         assert result.exit_code != 0
         assert "Session 'missing' not found." in result.output
+
+
+class TestArtifactsCommand:
+    def test_artifacts_help_is_available(self):
+        result = CliRunner().invoke(cli, ["artifacts", "--help"])
+
+        assert result.exit_code == 0
+        assert "list" in result.output
+        assert "show" in result.output
+        assert "accept" in result.output
+        assert "reject" in result.output
+
+    def test_artifacts_list_outputs_saved_proposals(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["artifacts", "list", "--status", "proposed", "--project", "aide"],
+            )
+
+        assert result.exit_code == 0
+        assert f"#{artifact_id} [proposed] verification_recipe aide" in result.output
+        assert "source: codex:digest-1" in result.output
+
+    def test_artifacts_list_empty(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(cli, ["artifacts", "list"])
+
+        assert result.exit_code == 0
+        assert "No artifacts found." in result.output
+
+    def test_artifacts_show_outputs_detail(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(
+            config.db_path,
+            _semantic_artifact(),
+            note="successful verification command",
+        )
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(cli, ["artifacts", "show", str(artifact_id)])
+
+        assert result.exit_code == 0
+        assert f"Artifact #{artifact_id}: Run full check" in result.output
+        assert "Type: verification_recipe" in result.output
+        assert "Status: proposed" in result.output
+        assert "Use just check before committing." in result.output
+        assert "Events" in result.output
+        assert "successful verification command" in result.output
+
+    def test_artifacts_show_missing_exits_nonzero(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(cli, ["artifacts", "show", "999"])
+
+        assert result.exit_code != 0
+        assert "Artifact #999 not found." in result.output
+
+    def test_artifacts_accept_updates_status(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["artifacts", "accept", str(artifact_id), "--note", "Looks right."],
+            )
+
+        artifact = get_artifact(config.db_path, artifact_id)
+        assert result.exit_code == 0
+        assert f"Artifact #{artifact_id} accepted: Run full check" in result.output
+        assert artifact["status"] == "accepted"
+        assert artifact["events"][-1]["note"] == "Looks right."
+
+    def test_artifacts_reject_updates_status(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["artifacts", "reject", str(artifact_id), "--note", "Too vague."],
+            )
+
+        artifact = get_artifact(config.db_path, artifact_id)
+        assert result.exit_code == 0
+        assert f"Artifact #{artifact_id} rejected: Run full check" in result.output
+        assert artifact["status"] == "rejected"
+        assert artifact["events"][-1]["note"] == "Too vague."
+
+    def test_artifacts_accept_rejects_non_proposed_artifact(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(cli, ["artifacts", "reject", str(artifact_id)])
+
+        assert result.exit_code != 0
+        assert "only proposed artifacts can be accepted or rejected" in result.output

@@ -606,3 +606,160 @@ def digest(session_id: str, provider: str | None, save_proposals: bool):
             click.echo(f"   Reason: {proposal.reason}")
         for evidence in proposal.evidence:
             click.echo(f"   Evidence: {evidence.summary}")
+
+
+@cli.group()
+def artifacts():
+    """Review proposed semantic artifacts."""
+    pass
+
+
+@artifacts.command("list")
+@click.option("--project", "project_name", default=None, help="Filter by project name.")
+@click.option(
+    "--status",
+    type=click.Choice(["proposed", "accepted", "rejected", "superseded", "archived"]),
+    default=None,
+    help="Filter by artifact status.",
+)
+@click.option(
+    "--type",
+    "artifact_type",
+    type=click.Choice([
+        "agent_mistake",
+        "credential_step",
+        "decision",
+        "future_agent_instruction",
+        "planner_signal",
+        "risky_action",
+        "setup_step",
+        "verification_recipe",
+    ]),
+    default=None,
+    help="Filter by artifact type.",
+)
+def artifacts_list(
+    project_name: str | None,
+    status: str | None,
+    artifact_type: str | None,
+):
+    """List semantic artifacts."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.artifacts import list_artifacts
+
+    rows = list_artifacts(
+        db_path,
+        project_name=project_name,
+        status=status,
+        artifact_type=artifact_type,
+    )
+    if not rows:
+        click.echo("No artifacts found.")
+        return
+
+    for row in rows:
+        source = _artifact_source_label(row)
+        click.echo(
+            f"#{row['id']} [{row['status']}] {row['artifact_type']} "
+            f"{row['project_name']} - {row['title']}"
+        )
+        if source:
+            click.echo(f"  source: {source}")
+
+
+@artifacts.command("show")
+@click.argument("artifact_id", type=int)
+def artifacts_show(artifact_id: int):
+    """Show one artifact with evidence and lifecycle events."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.artifacts import get_artifact
+
+    artifact = get_artifact(db_path, artifact_id)
+    if artifact is None:
+        click.echo(f"Artifact #{artifact_id} not found.", err=True)
+        raise SystemExit(1)
+
+    _echo_artifact_detail(artifact)
+
+
+@artifacts.command("accept")
+@click.argument("artifact_id", type=int)
+@click.option("--note", default=None, help="Optional review note.")
+def artifacts_accept(artifact_id: int, note: str | None):
+    """Accept a proposed artifact."""
+    _review_artifact(artifact_id, "accepted", note=note)
+
+
+@artifacts.command("reject")
+@click.argument("artifact_id", type=int)
+@click.option("--note", default=None, help="Optional review note.")
+def artifacts_reject(artifact_id: int, note: str | None):
+    """Reject a proposed artifact."""
+    _review_artifact(artifact_id, "rejected", note=note)
+
+
+def _review_artifact(artifact_id: int, status: str, note: str | None = None) -> None:
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.artifacts import accept_artifact, reject_artifact
+
+    try:
+        artifact = (
+            accept_artifact(db_path, artifact_id, note=note)
+            if status == "accepted"
+            else reject_artifact(db_path, artifact_id, note=note)
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Artifact #{artifact_id} {artifact['status']}: {artifact['title']}")
+
+
+def _echo_artifact_detail(artifact: dict) -> None:
+    click.echo(f"Artifact #{artifact['id']}: {artifact['title']}")
+    click.echo(f"Type: {artifact['artifact_type']}")
+    click.echo(f"Status: {artifact['status']}")
+    click.echo(f"Confidence: {artifact['confidence']}")
+    click.echo(f"Project: {artifact['project_name']}")
+    source = _artifact_source_label(artifact)
+    if source:
+        click.echo(f"Source: {source}")
+    click.echo("")
+    click.echo(artifact["body"])
+
+    if artifact["evidence"]:
+        click.echo("")
+        click.echo("Evidence")
+        for item in artifact["evidence"]:
+            label = item["evidence_kind"]
+            tool = f" via {item['tool_name']}" if item["tool_name"] else ""
+            click.echo(f"- {label}{tool}: {item['summary']}")
+
+    if artifact["events"]:
+        click.echo("")
+        click.echo("Events")
+        for event in artifact["events"]:
+            note = f" - {event['note']}" if event["note"] else ""
+            click.echo(f"- {event['event_type']} at {event['created_at']}{note}")
+
+
+def _artifact_source_label(artifact: dict) -> str | None:
+    provider = artifact.get("source_provider")
+    session_id = artifact.get("source_session_id")
+    if not provider or not session_id:
+        return None
+    return f"{provider}:{session_id}"
