@@ -542,3 +542,67 @@ def autopsy(session_id: str, provider: str | None):
 
     report = render_report(summary, cost_analysis, context, suggestions)
     click.echo(report)
+
+
+@cli.command()
+@click.argument("session_id")
+@click.option(
+    "--provider",
+    type=click.Choice(sorted(SUPPORTED_PROVIDERS)),
+    default=None,
+    help="Disambiguate the session provider when raw session IDs collide.",
+)
+@click.option(
+    "--save-proposals",
+    is_flag=True,
+    help="Persist generated proposals for later review. Default is preview only.",
+)
+def digest(session_id: str, provider: str | None, save_proposals: bool):
+    """Propose reviewable semantic artifacts from one session."""
+    config = load_config()
+    db_path = config.db_path
+
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.digest import build_digest, save_digest_proposals
+
+    result = build_digest(db_path, session_id, provider=provider)
+    if result is None:
+        click.echo(f"Session '{session_id}' not found.", err=True)
+        raise SystemExit(1)
+
+    session = result.session
+    qualified_id = f"{session['provider']}:{session['session_id']}"
+    click.echo(f"Digest proposals for {qualified_id} ({session['project_name']})")
+
+    if not result.proposals:
+        click.echo("No artifact proposals found.")
+        return
+
+    artifact_ids = (
+        save_digest_proposals(db_path, result) if save_proposals else [None] * len(result.proposals)
+    )
+    if save_proposals:
+        click.echo(f"Saved {len(result.proposals)} artifact proposal(s).")
+    else:
+        click.echo(
+            f"Dry run: {len(result.proposals)} artifact proposal(s). "
+            "Use --save-proposals to persist them."
+        )
+
+    for index, (proposal, artifact_id) in enumerate(
+        zip(result.proposals, artifact_ids, strict=True),
+        start=1,
+    ):
+        artifact = proposal.artifact
+        saved_suffix = f" #{artifact_id}" if artifact_id is not None else ""
+        click.echo("")
+        click.echo(f"{index}. [{artifact.artifact_type}]{saved_suffix} {artifact.title}")
+        click.echo(f"   Confidence: {artifact.confidence}")
+        click.echo(f"   {artifact.body}")
+        if proposal.reason:
+            click.echo(f"   Reason: {proposal.reason}")
+        for evidence in proposal.evidence:
+            click.echo(f"   Evidence: {evidence.summary}")

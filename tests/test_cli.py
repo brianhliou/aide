@@ -2,10 +2,12 @@
 
 import json
 import shutil
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from aide.artifacts import list_artifacts
 from aide.cli import (
     archive_jsonl,
     backup_redacted_sources,
@@ -14,8 +16,9 @@ from aide.cli import (
     resolve_ingest_sources,
 )
 from aide.config import AideConfig, LogSource
-from aide.db import get_summary_stats, init_db
+from aide.db import get_summary_stats, ingest_sessions, init_db
 from aide.jobs import LaunchdJobStatus
+from aide.models import ParsedMessage, ParsedSession, ToolCall
 from aide.redaction import RedactionAuditResult
 
 
@@ -28,6 +31,55 @@ def _config(tmp_path, sources=None):
         db_path=tmp_path / "aide.db",
         sources=sources if sources is not None else [],
         sources_configured=sources is not None,
+    )
+
+
+def _digest_session() -> ParsedSession:
+    now = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    message = ParsedMessage(
+        uuid="msg-digest",
+        parent_uuid=None,
+        session_id="digest-1",
+        timestamp=now,
+        role="assistant",
+        type="assistant",
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        content_length=100,
+        tool_calls=[
+            ToolCall(
+                tool_name="Bash",
+                file_path=None,
+                timestamp=now,
+                command="just check",
+            )
+        ],
+    )
+    return ParsedSession(
+        provider="codex",
+        session_id="digest-1",
+        project_path="/Users/test/projects/aide",
+        project_name="aide",
+        source_file="/fake/digest-1.jsonl",
+        started_at=now,
+        ended_at=now,
+        messages=[message],
+        duration_seconds=0,
+        total_input_tokens=100,
+        total_output_tokens=50,
+        total_cache_read_tokens=0,
+        total_cache_creation_tokens=0,
+        estimated_cost_usd=0.01,
+        message_count=1,
+        user_message_count=0,
+        assistant_message_count=1,
+        tool_call_count=1,
+        file_read_count=0,
+        file_write_count=0,
+        file_edit_count=0,
+        bash_count=1,
     )
 
 
@@ -492,3 +544,57 @@ class TestIngestCommand:
             / "-Users-test-projects-app"
             / "sample.jsonl"
         ).exists()
+
+
+class TestDigestCommand:
+    def test_digest_help_is_available(self):
+        result = CliRunner().invoke(cli, ["digest", "--help"])
+
+        assert result.exit_code == 0
+        assert "--save-proposals" in result.output
+        assert "--provider" in result.output
+
+    def test_digest_previews_without_saving(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["digest", "digest-1", "--provider", "codex"],
+            )
+
+        assert result.exit_code == 0
+        assert "Digest proposals for codex:digest-1 (aide)" in result.output
+        assert "Dry run: 1 artifact proposal" in result.output
+        assert "verification_recipe" in result.output
+        assert list_artifacts(config.db_path) == []
+
+    def test_digest_save_proposals_persists_artifacts(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["digest", "digest-1", "--provider", "codex", "--save-proposals"],
+            )
+
+        artifacts = list_artifacts(config.db_path)
+        assert result.exit_code == 0
+        assert "Saved 1 artifact proposal" in result.output
+        assert "#1" in result.output
+        assert len(artifacts) == 1
+        assert artifacts[0]["artifact_type"] == "verification_recipe"
+
+    def test_digest_missing_session_exits_nonzero(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(cli, ["digest", "missing"])
+
+        assert result.exit_code != 0
+        assert "Session 'missing' not found." in result.output
