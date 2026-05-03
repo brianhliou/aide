@@ -9,6 +9,97 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+ARTIFACT_TYPE_VALUES = (
+    "decision",
+    "setup_step",
+    "credential_step",
+    "verification_recipe",
+    "agent_mistake",
+    "risky_action",
+    "future_agent_instruction",
+    "planner_signal",
+)
+ARTIFACT_TYPES = frozenset(ARTIFACT_TYPE_VALUES)
+
+ARTIFACT_STATUS_VALUES = (
+    "proposed",
+    "accepted",
+    "rejected",
+    "superseded",
+    "archived",
+)
+ARTIFACT_STATUSES = frozenset(ARTIFACT_STATUS_VALUES)
+
+ARTIFACT_CONFIDENCE_VALUES = ("low", "medium", "high")
+ARTIFACT_CONFIDENCES = frozenset(ARTIFACT_CONFIDENCE_VALUES)
+
+ARTIFACT_EVIDENCE_KIND_VALUES = (
+    "session_summary",
+    "tool_pattern",
+    "error_pattern",
+    "verification_result",
+    "permission_friction",
+    "investigation_flag",
+)
+ARTIFACT_EVIDENCE_KINDS = frozenset(ARTIFACT_EVIDENCE_KIND_VALUES)
+
+ARTIFACT_EVENT_TYPE_VALUES = (
+    "proposed",
+    "accepted",
+    "rejected",
+    "superseded",
+    "archived",
+    "updated",
+)
+ARTIFACT_EVENT_TYPES = frozenset(ARTIFACT_EVENT_TYPE_VALUES)
+
+
+@dataclass
+class SemanticArtifact:
+    """A durable, reviewable project-memory candidate.
+
+    Artifact text is intentionally summary-level. Raw prompts, command output,
+    diffs, and secrets stay out of this contract.
+    """
+
+    project_name: str
+    artifact_type: str
+    title: str
+    body: str
+    first_seen_at: datetime
+    last_seen_at: datetime
+    project_path: str | None = None
+    status: str = "proposed"
+    confidence: str = "medium"
+    source_provider: str | None = None
+    source_session_id: str | None = None
+    source_message_uuid: str | None = None
+    id: int | None = None
+
+
+@dataclass
+class ArtifactEvidence:
+    """Summarized evidence supporting a semantic artifact."""
+
+    artifact_id: int
+    provider: str
+    session_id: str
+    evidence_kind: str
+    summary: str
+    message_uuid: str | None = None
+    tool_name: str | None = None
+    id: int | None = None
+
+
+@dataclass
+class ArtifactEvent:
+    """Lifecycle event for artifact review and maintenance."""
+
+    artifact_id: int
+    event_type: str
+    note: str | None = None
+    id: int | None = None
+
 
 @dataclass
 class WorkBlock:

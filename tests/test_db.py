@@ -11,7 +11,20 @@ from aide.db import (
     log_ingestion,
     rebuild_daily_stats,
 )
-from aide.models import ParsedMessage, ParsedSession, ToolCall, WorkBlock
+from aide.models import (
+    ARTIFACT_CONFIDENCES,
+    ARTIFACT_EVENT_TYPES,
+    ARTIFACT_EVIDENCE_KINDS,
+    ARTIFACT_STATUSES,
+    ARTIFACT_TYPES,
+    ArtifactEvent,
+    ArtifactEvidence,
+    ParsedMessage,
+    ParsedSession,
+    SemanticArtifact,
+    ToolCall,
+    WorkBlock,
+)
 
 
 def _make_session(
@@ -116,8 +129,258 @@ def test_init_db_creates_tables(tmp_db):
     }
     con.close()
 
-    expected = {"sessions", "messages", "tool_calls", "daily_stats", "ingest_log", "work_blocks"}
+    expected = {
+        "sessions",
+        "messages",
+        "tool_calls",
+        "daily_stats",
+        "ingest_log",
+        "work_blocks",
+        "semantic_artifacts",
+        "artifact_evidence",
+        "artifact_events",
+    }
     assert expected.issubset(tables)
+
+
+def test_semantic_artifact_model_constants_cover_initial_types():
+    """Artifact model constants expose the first durable-memory vocabulary."""
+    assert {
+        "decision",
+        "setup_step",
+        "credential_step",
+        "verification_recipe",
+        "agent_mistake",
+        "risky_action",
+        "future_agent_instruction",
+        "planner_signal",
+    } == ARTIFACT_TYPES
+    assert {"proposed", "accepted", "rejected", "superseded", "archived"} == (
+        ARTIFACT_STATUSES
+    )
+    assert {"low", "medium", "high"} == ARTIFACT_CONFIDENCES
+    assert "investigation_flag" in ARTIFACT_EVIDENCE_KINDS
+    assert "updated" in ARTIFACT_EVENT_TYPES
+
+
+def test_semantic_artifact_dataclasses_are_inert_contracts():
+    """Artifact dataclasses can represent proposals before persistence exists."""
+    now = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+    artifact = SemanticArtifact(
+        project_name="aide",
+        artifact_type="verification_recipe",
+        title="Run full check",
+        body="Use just check before committing.",
+        first_seen_at=now,
+        last_seen_at=now,
+        source_provider="codex",
+        source_session_id="sess-001",
+    )
+    evidence = ArtifactEvidence(
+        artifact_id=1,
+        provider="codex",
+        session_id="sess-001",
+        evidence_kind="verification_result",
+        summary="just check passed.",
+    )
+    event = ArtifactEvent(artifact_id=1, event_type="proposed")
+
+    assert artifact.status == "proposed"
+    assert artifact.confidence == "medium"
+    assert evidence.message_uuid is None
+    assert event.note is None
+
+
+def test_init_db_creates_semantic_artifact_tables_with_expected_columns(tmp_db):
+    """Artifact tables store proposals, evidence, and review events."""
+    import sqlite3
+
+    init_db(tmp_db)
+    con = sqlite3.connect(tmp_db)
+
+    artifact_cols = {
+        row[1]
+        for row in con.execute("PRAGMA table_info(semantic_artifacts)").fetchall()
+    }
+    evidence_cols = {
+        row[1]
+        for row in con.execute("PRAGMA table_info(artifact_evidence)").fetchall()
+    }
+    event_cols = {
+        row[1]
+        for row in con.execute("PRAGMA table_info(artifact_events)").fetchall()
+    }
+    con.close()
+
+    assert {
+        "project_name",
+        "project_path",
+        "artifact_type",
+        "title",
+        "body",
+        "status",
+        "confidence",
+        "source_provider",
+        "source_session_id",
+        "source_message_uuid",
+        "first_seen_at",
+        "last_seen_at",
+        "accepted_at",
+        "rejected_at",
+    }.issubset(artifact_cols)
+    assert {
+        "artifact_id",
+        "provider",
+        "session_id",
+        "message_uuid",
+        "tool_name",
+        "evidence_kind",
+        "summary",
+    }.issubset(evidence_cols)
+    assert {"artifact_id", "event_type", "note", "created_at"}.issubset(event_cols)
+
+
+def test_semantic_artifact_tables_store_proposal_evidence_and_event(tmp_db):
+    """Artifact tables support the proposed -> review lifecycle foundation."""
+    import sqlite3
+
+    init_db(tmp_db)
+    session = _make_session()
+    ingest_sessions(tmp_db, [session])
+
+    con = sqlite3.connect(tmp_db)
+    con.row_factory = sqlite3.Row
+    con.execute(
+        """INSERT INTO semantic_artifacts (
+            project_name, project_path, artifact_type, title, body,
+            source_provider, source_session_id, first_seen_at, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "myapp",
+            "-Users-brian-projects-myapp",
+            "verification_recipe",
+            "Run checks",
+            "Use just check before committing.",
+            "claude",
+            "sess-001",
+            "2025-01-15T10:00:00+00:00",
+            "2025-01-15T10:00:00+00:00",
+        ),
+    )
+    artifact_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+    con.execute(
+        """INSERT INTO artifact_evidence (
+            artifact_id, provider, session_id, evidence_kind, summary
+        ) VALUES (?, ?, ?, ?, ?)""",
+        (
+            artifact_id,
+            "claude",
+            "sess-001",
+            "verification_result",
+            "A verification command completed successfully.",
+        ),
+    )
+    con.execute(
+        "INSERT INTO artifact_events (artifact_id, event_type) VALUES (?, ?)",
+        (artifact_id, "proposed"),
+    )
+    con.commit()
+
+    artifact = con.execute("SELECT * FROM semantic_artifacts").fetchone()
+    evidence_count = con.execute("SELECT COUNT(*) FROM artifact_evidence").fetchone()[0]
+    event_count = con.execute("SELECT COUNT(*) FROM artifact_events").fetchone()[0]
+    con.close()
+
+    assert artifact["status"] == "proposed"
+    assert artifact["confidence"] == "medium"
+    assert evidence_count == 1
+    assert event_count == 1
+
+
+def test_semantic_artifact_tables_reject_unknown_values(tmp_db):
+    """Artifact vocabulary is constrained before extraction logic exists."""
+    import sqlite3
+
+    init_db(tmp_db)
+    con = sqlite3.connect(tmp_db)
+    try:
+        con.execute(
+            """INSERT INTO semantic_artifacts (
+                project_name, artifact_type, title, body, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "myapp",
+                "raw_prompt",
+                "Bad artifact",
+                "Should not be accepted.",
+                "2025-01-15T10:00:00+00:00",
+                "2025-01-15T10:00:00+00:00",
+            ),
+        )
+    except sqlite3.IntegrityError:
+        pass
+    else:
+        raise AssertionError("unknown artifact_type should fail")
+    finally:
+        con.close()
+
+
+def test_semantic_artifact_indexes_exist(tmp_db):
+    """Artifact lookup paths are indexed for later list/review commands."""
+    import sqlite3
+
+    init_db(tmp_db)
+    con = sqlite3.connect(tmp_db)
+    indexes = {
+        row[1]
+        for row in con.execute("PRAGMA index_list(semantic_artifacts)").fetchall()
+    }
+    evidence_indexes = {
+        row[1]
+        for row in con.execute("PRAGMA index_list(artifact_evidence)").fetchall()
+    }
+    event_indexes = {
+        row[1]
+        for row in con.execute("PRAGMA index_list(artifact_events)").fetchall()
+    }
+    con.close()
+
+    assert "idx_semantic_artifacts_project" in indexes
+    assert "idx_semantic_artifacts_source" in indexes
+    assert "idx_artifact_evidence_artifact" in evidence_indexes
+    assert "idx_artifact_events_artifact" in event_indexes
+
+
+def test_init_db_adds_semantic_artifact_tables_to_existing_database(tmp_db):
+    """Existing databases gain artifact tables through normal init_db startup."""
+    import sqlite3
+
+    con = sqlite3.connect(tmp_db)
+    con.execute("""CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL UNIQUE,
+        project_path TEXT NOT NULL,
+        project_name TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        source_file TEXT NOT NULL
+    )""")
+    con.commit()
+    con.close()
+
+    init_db(tmp_db)
+
+    con = sqlite3.connect(tmp_db)
+    tables = {
+        row[0]
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    con.close()
+
+    assert "semantic_artifacts" in tables
+    assert "artifact_evidence" in tables
+    assert "artifact_events" in tables
 
 
 def test_init_db_is_idempotent(tmp_db):

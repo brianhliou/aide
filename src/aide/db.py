@@ -5,9 +5,21 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from aide.models import ParsedSession
+from aide.models import (
+    ARTIFACT_CONFIDENCE_VALUES,
+    ARTIFACT_EVENT_TYPE_VALUES,
+    ARTIFACT_EVIDENCE_KIND_VALUES,
+    ARTIFACT_STATUS_VALUES,
+    ARTIFACT_TYPE_VALUES,
+    ParsedSession,
+)
 
-_SCHEMA = """
+
+def _sql_text_values(values: tuple[str, ...]) -> str:
+    return ", ".join(f"'{value}'" for value in values)
+
+
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider TEXT NOT NULL DEFAULT 'claude',
@@ -125,10 +137,73 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     UNIQUE(provider, source_file)
 );
 
+CREATE TABLE IF NOT EXISTS semantic_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_name TEXT NOT NULL,
+    project_path TEXT,
+    artifact_type TEXT NOT NULL CHECK (
+        artifact_type IN ({_sql_text_values(ARTIFACT_TYPE_VALUES)})
+    ),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed' CHECK (
+        status IN ({_sql_text_values(ARTIFACT_STATUS_VALUES)})
+    ),
+    confidence TEXT NOT NULL DEFAULT 'medium' CHECK (
+        confidence IN ({_sql_text_values(ARTIFACT_CONFIDENCE_VALUES)})
+    ),
+    source_provider TEXT,
+    source_session_id TEXT,
+    source_message_uuid TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    accepted_at TEXT,
+    rejected_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (source_provider, source_session_id)
+        REFERENCES sessions(provider, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS artifact_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    message_uuid TEXT,
+    tool_name TEXT,
+    evidence_kind TEXT NOT NULL CHECK (
+        evidence_kind IN ({_sql_text_values(ARTIFACT_EVIDENCE_KIND_VALUES)})
+    ),
+    summary TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (artifact_id) REFERENCES semantic_artifacts(id),
+    FOREIGN KEY (provider, session_id) REFERENCES sessions(provider, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS artifact_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL CHECK (
+        event_type IN ({_sql_text_values(ARTIFACT_EVENT_TYPE_VALUES)})
+    ),
+    note TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (artifact_id) REFERENCES semantic_artifacts(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(provider, session_id);
 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(provider, session_id);
+CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_project
+    ON semantic_artifacts(project_name, status, artifact_type);
+CREATE INDEX IF NOT EXISTS idx_semantic_artifacts_source
+    ON semantic_artifacts(source_provider, source_session_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_evidence_artifact
+    ON artifact_evidence(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_events_artifact
+    ON artifact_events(artifact_id);
 
 CREATE VIEW IF NOT EXISTS v_sessions_30d AS
   SELECT * FROM sessions WHERE date(started_at) >= date('now', '-30 days');
