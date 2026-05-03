@@ -5,6 +5,7 @@
 ## Workspace Coordination
 
 - Follow `~/projects/MULTI_CODEX.md` for parallel Codex/Claude sessions.
+- Prefer `just codex-status` for the local coordination preflight.
 - Before implementation edits, check `git status --short --branch` and
   `git worktree list`.
 - Use one branch and one worktree per implementation session; keep the primary
@@ -38,6 +39,7 @@
 ## Commands
 
 ```bash
+just codex-status
 uv run aide ingest
 uv run aide ingest --provider codex
 uv run aide ingest --full

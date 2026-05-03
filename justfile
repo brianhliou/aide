@@ -6,6 +6,10 @@
 default:
     @just --list
 
+# Local Codex/Claude coordination status
+codex-status:
+    sh scripts/codex-status.sh
+
 # Development
 # ----------
 
