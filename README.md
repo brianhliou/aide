@@ -38,6 +38,9 @@ aide reads local AI coding session logs (JSONL), parses them into a SQLite datab
 - **Dashboard** (`aide serve`) — Web UI showing cost trends, session browser, project comparisons, and tool usage patterns across all your sessions
 - **Data freshness** — Overview panel showing Claude/Codex session counts, latest session timestamps, tracked file counts, and last ingest timestamps
 - **Session diagnostics** (`aide autopsy <id>`) — Per-session Markdown report with cost breakdown by category, context window analysis, compaction detection, and CLAUDE.md improvement suggestions
+- **Investigation queue** — Dashboard view that flags sessions with weak attribution, high friction, file-access failures, no-edit expensive work, and other review signals
+- **Semantic artifacts** — Reviewable project knowledge proposed from sessions and accepted before becoming durable context
+- **Runbooks and briefs** — Markdown generated from accepted artifacts for future human or agent sessions
 - **Quick stats** (`aide stats`) — Terminal summary of sessions, costs, and projects
 
 Zero LLM calls. Zero cost to run. All data stays local.
@@ -57,6 +60,13 @@ aide serve               # Start dashboard at localhost:8787
 aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal
 aide autopsy <id>        # Diagnose a specific session
+aide digest <id> --save-proposals
+aide artifacts list
+aide artifacts show <artifact-id>
+aide artifacts accept <artifact-id>
+aide artifacts reject <artifact-id>
+aide runbook generate --project <name>
+aide brief --project <name> --task "<task>"
 ```
 
 ## Configuration
@@ -98,7 +108,7 @@ not print matched log values.
 git clone https://github.com/brianhliou/aide.git
 cd aide
 uv sync          # Install dependencies
-uv run pytest    # Run tests (357 tests)
+uv run pytest    # Run tests (569 tests)
 uv run aide serve   # Start dev server
 ```
 
