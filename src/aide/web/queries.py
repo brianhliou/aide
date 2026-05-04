@@ -2375,3 +2375,95 @@ def get_error_breakdown_for_session(
         return result
     finally:
         con.close()
+
+
+def get_artifacts_list(
+    db_path: Path,
+    project_name: str | None = None,
+    status: str | None = None,
+    artifact_type: str | None = None,
+) -> list[dict]:
+    """List semantic artifacts for dashboard review."""
+    clauses = []
+    params = []
+    if project_name:
+        clauses.append("project_name = ?")
+        params.append(project_name)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if artifact_type:
+        clauses.append("artifact_type = ?")
+        params.append(artifact_type)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    con = get_connection(db_path)
+    try:
+        rows = con.execute(
+            f"""SELECT
+                a.*,
+                COUNT(e.id) AS evidence_count,
+                GROUP_CONCAT(
+                    e.evidence_kind || ': ' || e.summary,
+                    CHAR(10)
+                ) AS evidence_summaries
+            FROM semantic_artifacts a
+            LEFT JOIN artifact_evidence e ON e.artifact_id = a.id
+            {where}
+            GROUP BY a.id
+            ORDER BY
+                CASE a.status
+                    WHEN 'proposed' THEN 0
+                    WHEN 'accepted' THEN 1
+                    WHEN 'rejected' THEN 2
+                    ELSE 3
+                END,
+                a.updated_at DESC,
+                a.id DESC""",
+            tuple(params),
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "evidence": _split_evidence(row["evidence_summaries"]),
+            }
+            for row in rows
+        ]
+    finally:
+        con.close()
+
+
+def get_artifact_filter_options(db_path: Path) -> dict:
+    """Return project/type/status options present in artifact data."""
+    con = get_connection(db_path)
+    try:
+        projects = [
+            row["project_name"]
+            for row in con.execute(
+                """SELECT DISTINCT project_name FROM semantic_artifacts
+                ORDER BY project_name"""
+            ).fetchall()
+        ]
+        statuses = [
+            row["status"]
+            for row in con.execute(
+                """SELECT DISTINCT status FROM semantic_artifacts
+                ORDER BY status"""
+            ).fetchall()
+        ]
+        types = [
+            row["artifact_type"]
+            for row in con.execute(
+                """SELECT DISTINCT artifact_type FROM semantic_artifacts
+                ORDER BY artifact_type"""
+            ).fetchall()
+        ]
+        return {"projects": projects, "statuses": statuses, "types": types}
+    finally:
+        con.close()
+
+
+def _split_evidence(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [line for line in value.splitlines() if line]

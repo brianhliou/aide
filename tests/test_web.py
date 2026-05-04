@@ -5,9 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from aide.artifacts import accept_artifact, get_artifact, propose_artifact, reject_artifact
 from aide.config import AideConfig
 from aide.db import ingest_sessions, init_db, log_ingestion, rebuild_daily_stats
-from aide.models import ParsedMessage, ParsedSession, ToolCall, WorkBlock
+from aide.models import (
+    ArtifactEvidence,
+    ParsedMessage,
+    ParsedSession,
+    SemanticArtifact,
+    ToolCall,
+    WorkBlock,
+)
 from aide.web import queries
 from aide.web.app import create_app
 
@@ -123,6 +131,42 @@ def _make_config(db_path, subscription_user=False):
     )
 
 
+def _make_artifact(
+    artifact_type="verification_recipe",
+    title="Run full check",
+    body="Use `just check` before committing.",
+    project_name="alpha",
+    status="proposed",
+):
+    """Build a semantic artifact tied to the alpha test session."""
+    now = datetime.now(timezone.utc)
+    return SemanticArtifact(
+        project_name=project_name,
+        project_path=f"/Users/test/projects/{project_name}",
+        artifact_type=artifact_type,
+        title=title,
+        body=body,
+        status=status,
+        confidence="high",
+        source_provider="claude",
+        source_session_id="sess-alpha-1",
+        first_seen_at=now,
+        last_seen_at=now,
+    )
+
+
+def _make_artifact_evidence(kind="verification_result", summary="Check passed."):
+    """Build summarized evidence for an artifact proposal."""
+    return ArtifactEvidence(
+        artifact_id=0,
+        provider="claude",
+        session_id="sess-alpha-1",
+        tool_name="Bash",
+        evidence_kind=kind,
+        summary=summary,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -217,6 +261,48 @@ def empty_client(empty_db):
 def sub_client(seeded_db):
     """Flask test client for a subscription user."""
     config = _make_config(seeded_db, subscription_user=True)
+    app = create_app(config)
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def artifact_db(tmp_path):
+    """A temporary database pre-populated with sessions and artifacts."""
+    db_path = tmp_path / "test-aide-artifacts.db"
+    _seed_db(db_path)
+    proposed = propose_artifact(
+        db_path,
+        _make_artifact(),
+        evidence=[_make_artifact_evidence()],
+    )
+    accepted = propose_artifact(
+        db_path,
+        _make_artifact(
+            artifact_type="decision",
+            title="Use SQLite",
+            body="Keep local analytics in SQLite.",
+        ),
+    )
+    rejected = propose_artifact(
+        db_path,
+        _make_artifact(
+            artifact_type="risky_action",
+            title="Avoid raw log sharing",
+            body="Do not paste raw session logs into external tools.",
+            project_name="beta",
+        ),
+    )
+    accept_artifact(db_path, accepted)
+    reject_artifact(db_path, rejected)
+    return {"db_path": db_path, "proposed": proposed, "accepted": accepted}
+
+
+@pytest.fixture
+def artifact_client(artifact_db):
+    """Flask test client backed by artifact review data."""
+    config = _make_config(artifact_db["db_path"])
     app = create_app(config)
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -401,6 +487,67 @@ class TestRoutes:
         assert b"Codex" in resp.data
         assert b"Tool Usage" in resp.data
 
+    def test_artifacts_returns_200(self, artifact_client):
+        resp = artifact_client.get("/artifacts")
+        assert resp.status_code == 200
+
+    def test_artifacts_contains_reviewable_artifacts(self, artifact_client):
+        resp = artifact_client.get("/artifacts")
+        assert b"Run full check" in resp.data
+        assert b"Use SQLite" in resp.data
+        assert b"Accept" in resp.data
+        assert b"Reject" in resp.data
+        assert b"verification_result: Check passed." in resp.data
+
+    def test_artifacts_filters_by_status(self, artifact_client):
+        resp = artifact_client.get("/artifacts?status=accepted")
+        assert resp.status_code == 200
+        assert b"Use SQLite" in resp.data
+        assert b"Run full check" not in resp.data
+
+    def test_artifacts_filters_by_project_and_type(self, artifact_client):
+        resp = artifact_client.get("/artifacts?project=beta&type=risky_action")
+        assert resp.status_code == 200
+        assert b"Avoid raw log sharing" in resp.data
+        assert b"Run full check" not in resp.data
+
+    def test_artifact_accept_post_updates_status(self, artifact_client, artifact_db):
+        artifact_id = artifact_db["proposed"]
+        resp = artifact_client.post(
+            f"/artifacts/{artifact_id}/accept",
+            data={"status": "proposed"},
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/artifacts?status=proposed"
+        assert get_artifact(artifact_db["db_path"], artifact_id)["status"] == "accepted"
+
+    def test_artifact_reject_post_updates_status(self, artifact_client, artifact_db):
+        artifact_id = propose_artifact(
+            artifact_db["db_path"],
+            _make_artifact(title="Prefer narrow approvals"),
+        )
+        resp = artifact_client.post(
+            f"/artifacts/{artifact_id}/reject",
+            data={"project": "alpha", "type": "verification_recipe"},
+        )
+
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == (
+            "/artifacts?project=alpha&type=verification_recipe"
+        )
+        assert get_artifact(artifact_db["db_path"], artifact_id)["status"] == "rejected"
+
+    def test_artifact_review_invalid_transition_returns_400(
+        self,
+        artifact_client,
+        artifact_db,
+    ):
+        resp = artifact_client.post(f"/artifacts/{artifact_db['accepted']}/reject")
+
+        assert resp.status_code == 400
+        assert b"only proposed artifacts" in resp.data
+
 
 # ===========================================================================
 # Navigation
@@ -410,13 +557,14 @@ class TestRoutes:
 class TestNavigation:
     """Test that navigation links are present on all pages."""
 
-    @pytest.mark.parametrize("path", ["/", "/projects", "/sessions", "/tools"])
+    @pytest.mark.parametrize("path", ["/", "/projects", "/sessions", "/tools", "/artifacts"])
     def test_nav_links_present(self, client, path):
         resp = client.get(path)
         assert b'href="/"' in resp.data
         assert b'href="/projects"' in resp.data
         assert b'href="/sessions"' in resp.data
         assert b'href="/tools"' in resp.data
+        assert b'href="/artifacts"' in resp.data
 
 
 # ===========================================================================
@@ -476,6 +624,11 @@ class TestEmptyDatabase:
         resp = empty_client.get("/tools")
         assert resp.status_code == 200
         assert b"No file access data found" in resp.data
+
+    def test_artifacts_empty(self, empty_client):
+        resp = empty_client.get("/artifacts")
+        assert resp.status_code == 200
+        assert b"No artifacts found" in resp.data
 
 
 class TestSubscriptionUser:

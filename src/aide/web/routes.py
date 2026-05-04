@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlencode
+
 from flask import Blueprint, current_app, redirect, render_template, request
 
+from aide.artifacts import accept_artifact, reject_artifact
 from aide.config import save_config_value
 from aide.web import queries
 
@@ -163,6 +166,56 @@ def insights():
     )
 
 
+@bp.route("/artifacts")
+def artifacts():
+    """Semantic artifact review page."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    project = request.args.get("project") or None
+    status = request.args.get("status") or None
+    artifact_type = request.args.get("type") or None
+    return render_template(
+        "artifacts.html",
+        artifacts=queries.get_artifacts_list(
+            db_path,
+            project_name=project,
+            status=status,
+            artifact_type=artifact_type,
+        ),
+        filters={
+            "project": project,
+            "status": status,
+            "type": artifact_type,
+        },
+        options=queries.get_artifact_filter_options(db_path),
+        subscription_user=sub,
+    )
+
+
+@bp.route("/artifacts/<int:artifact_id>/accept", methods=["POST"])
+def artifact_accept(artifact_id: int):
+    """Accept a proposed artifact and return to the artifact review page."""
+    db_path = current_app.config["DB_PATH"]
+    note = request.form.get("note") or None
+    try:
+        accept_artifact(db_path, artifact_id, note=note)
+    except ValueError as exc:
+        return render_template("404.html", message=str(exc)), 400
+    return redirect(_artifact_redirect_url())
+
+
+@bp.route("/artifacts/<int:artifact_id>/reject", methods=["POST"])
+def artifact_reject(artifact_id: int):
+    """Reject a proposed artifact and return to the artifact review page."""
+    db_path = current_app.config["DB_PATH"]
+    note = request.form.get("note") or None
+    try:
+        reject_artifact(db_path, artifact_id, note=note)
+    except ValueError as exc:
+        return render_template("404.html", message=str(exc)), 400
+    return redirect(_artifact_redirect_url())
+
+
 @bp.route("/settings/subscription", methods=["POST"])
 def toggle_subscription():
     """Toggle subscription_user setting and reload the page."""
@@ -171,3 +224,12 @@ def toggle_subscription():
     save_config_value("subscription_user", new_value)
     current_app.config["SUBSCRIPTION_USER"] = new_value
     return redirect(request.referrer or "/")
+
+
+def _artifact_redirect_url() -> str:
+    params = {}
+    for key in ("project", "status", "type"):
+        value = request.form.get(key)
+        if value:
+            params[key] = value
+    return "/artifacts" + (f"?{urlencode(params)}" if params else "")
