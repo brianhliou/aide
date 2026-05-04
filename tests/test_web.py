@@ -858,6 +858,8 @@ class TestEmptyDatabase:
     def test_effectiveness_empty(self, empty_client):
         resp = empty_client.get("/effectiveness")
         assert resp.status_code == 200
+        assert b"Callouts need two snapshot dates" in resp.data
+        assert b"aide effectiveness snapshot --date yesterday" in resp.data
         assert b"No sessions in this window" in resp.data
 
     def test_sessions_empty(self, empty_client):
