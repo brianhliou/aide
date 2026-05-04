@@ -60,6 +60,11 @@ def default_launchd_jobs(home: Path | None = None) -> list[LaunchdJobDefinition]
             plist_path=launch_agents / "com.brianliou.aide.ingest.plist",
         ),
         LaunchdJobDefinition(
+            name="effectiveness snapshot",
+            label="com.brianliou.aide.effectiveness-snapshot",
+            plist_path=launch_agents / "com.brianliou.aide.effectiveness-snapshot.plist",
+        ),
+        LaunchdJobDefinition(
             name="redacted backup",
             label="com.brianliou.aide.backup-redacted",
             plist_path=launch_agents / "com.brianliou.aide.backup-redacted.plist",

@@ -235,8 +235,8 @@ provider-aware:
 - Done: add `aide backup-redacted` for routine provider-aware redacted backups.
 - Done: add `aide redact-audit` to validate redacted outputs for likely sensitive
   leftovers.
-- Done: add `aide jobs status` to summarize routine launchd ingest and
-  redacted-backup health.
+- Done: add `aide jobs status` to summarize routine launchd ingest,
+  effectiveness snapshot, and redacted-backup health.
 - Done: add synthetic redaction tests for Claude and Codex shapes.
 - Done: create redacted Codex fixtures from real local logs.
 - Done: verify no sensitive strings remain in fixtures.

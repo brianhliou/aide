@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from aide.jobs import (
     LaunchdJobDefinition,
     collect_launchd_job_status,
+    default_launchd_jobs,
     format_launchd_schedule,
     parse_launchctl_print,
 )
@@ -45,6 +46,23 @@ def test_parse_launchctl_print_extracts_status_fields():
 def test_format_launchd_schedule_from_plist_dict():
     assert format_launchd_schedule({"StartCalendarInterval": {"Hour": 12, "Minute": 5}}) == (
         "daily 12:05"
+    )
+
+
+def test_default_launchd_jobs_include_effectiveness_snapshot(tmp_path):
+    jobs = default_launchd_jobs(home=tmp_path)
+
+    assert [job.name for job in jobs] == [
+        "ingest",
+        "effectiveness snapshot",
+        "redacted backup",
+    ]
+    assert jobs[1].label == "com.brianliou.aide.effectiveness-snapshot"
+    assert jobs[1].plist_path == (
+        tmp_path
+        / "Library"
+        / "LaunchAgents"
+        / "com.brianliou.aide.effectiveness-snapshot.plist"
     )
 
 

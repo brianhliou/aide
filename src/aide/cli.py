@@ -282,7 +282,7 @@ def jobs():
     help="Skip the redacted-backup audit check.",
 )
 def jobs_status(skip_audit: bool):
-    """Show launchd status for routine ingest and redacted backups."""
+    """Show launchd status for routine aide background jobs."""
     config = load_config()
     statuses = collect_launchd_job_statuses()
 
@@ -472,6 +472,112 @@ def serve(port: int | None):
         app.run(host="localhost", port=serve_port)
     except ImportError:
         click.echo("Web dashboard dependencies not found. Reinstall aide-dashboard.")
+
+
+@cli.group()
+def effectiveness():
+    """Persist and inspect effectiveness trend snapshots."""
+    pass
+
+
+@effectiveness.command("snapshot")
+@click.option(
+    "--date",
+    "snapshot_date",
+    default=None,
+    help="Snapshot date in YYYY-MM-DD format. Default: today.",
+)
+@click.option(
+    "--window-days",
+    default=30,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Lookback window to summarize.",
+)
+def effectiveness_snapshot(snapshot_date: str | None, window_days: int):
+    """Persist today's all/provider/project effectiveness metrics."""
+    config = load_config()
+    db_path = config.db_path
+
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from datetime import date
+
+    from aide.effectiveness import snapshot_effectiveness
+
+    day = None
+    if snapshot_date is not None:
+        try:
+            day = date.fromisoformat(snapshot_date)
+        except ValueError as exc:
+            raise click.ClickException("--date must use YYYY-MM-DD.") from exc
+
+    rows = snapshot_effectiveness(db_path, snapshot_date=day, window_days=window_days)
+    scopes = _count_by_scope(rows)
+    effective_date = rows[0].snapshot_date if rows else (day or date.today()).isoformat()
+    click.echo(
+        f"Stored {len(rows)} effectiveness snapshot row(s) "
+        f"for {effective_date} ({window_days}d)."
+    )
+    click.echo(
+        "Scopes: "
+        f"all={scopes.get('all', 0)}, "
+        f"provider={scopes.get('provider', 0)}, "
+        f"project={scopes.get('project', 0)}"
+    )
+
+
+@effectiveness.command("history")
+@click.option(
+    "--limit",
+    default=20,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Maximum rows to show.",
+)
+def effectiveness_history(limit: int):
+    """List recent persisted effectiveness snapshots."""
+    config = load_config()
+    db_path = config.db_path
+
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.db import init_db
+    from aide.effectiveness import ALL_VALUE, list_effectiveness_snapshots
+
+    init_db(db_path)
+    rows = list_effectiveness_snapshots(db_path, limit=limit)
+    if not rows:
+        click.echo("No effectiveness snapshots found.")
+        return
+
+    for row in rows:
+        target = row["project_name"]
+        if row["scope"] == "all":
+            target = "all"
+        elif row["project_name"] == ALL_VALUE:
+            target = row["provider"]
+        else:
+            target = f"{row['provider']}/{row['project_name']}"
+        click.echo(
+            f"{row['snapshot_date']} {row['scope']} {target}: "
+            f"{row['session_count']} sessions, "
+            f"review {row['review_rate']:.0%}, "
+            f"errors {row['error_rate']:.0%}, "
+            f"attribution {row['edit_attribution_rate']:.0%}"
+        )
+
+
+def _count_by_scope(rows: list[object]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        scope = getattr(row, "scope")
+        counts[scope] = counts.get(scope, 0) + 1
+    return counts
 
 
 def _yes_no(value: bool) -> str:

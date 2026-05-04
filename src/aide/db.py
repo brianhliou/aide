@@ -192,6 +192,33 @@ CREATE TABLE IF NOT EXISTS artifact_events (
     FOREIGN KEY (artifact_id) REFERENCES semantic_artifacts(id)
 );
 
+CREATE TABLE IF NOT EXISTS effectiveness_snapshots (
+    snapshot_date TEXT NOT NULL,
+    window_days INTEGER NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN ('all', 'provider', 'project')),
+    provider TEXT NOT NULL DEFAULT '__all__',
+    project_name TEXT NOT NULL DEFAULT '__all__',
+    session_count INTEGER DEFAULT 0,
+    total_cost REAL DEFAULT 0,
+    avg_cost_per_session REAL DEFAULT 0,
+    avg_active_seconds REAL DEFAULT 0,
+    tool_call_count INTEGER DEFAULT 0,
+    tool_error_count INTEGER DEFAULT 0,
+    error_rate REAL DEFAULT 0,
+    no_edit_session_count INTEGER DEFAULT 0,
+    no_edit_rate REAL DEFAULT 0,
+    edit_call_count INTEGER DEFAULT 0,
+    attributed_edit_call_count INTEGER DEFAULT 0,
+    edit_attribution_rate REAL DEFAULT 0,
+    cost_per_edit REAL DEFAULT 0,
+    review_session_count INTEGER DEFAULT 0,
+    review_rate REAL DEFAULT 0,
+    review_score INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (snapshot_date, window_days, scope, provider, project_name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_started_at ON sessions(started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(provider, session_id);
@@ -204,6 +231,8 @@ CREATE INDEX IF NOT EXISTS idx_artifact_evidence_artifact
     ON artifact_evidence(artifact_id);
 CREATE INDEX IF NOT EXISTS idx_artifact_events_artifact
     ON artifact_events(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_effectiveness_snapshots_scope
+    ON effectiveness_snapshots(snapshot_date, scope, provider, project_name);
 
 CREATE VIEW IF NOT EXISTS v_sessions_30d AS
   SELECT * FROM sessions WHERE date(started_at) >= date('now', '-30 days');
