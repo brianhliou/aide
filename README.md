@@ -62,6 +62,7 @@ aide effectiveness snapshot  # Persist daily effectiveness trend metrics
 aide effectiveness snapshot --date yesterday  # Backfill a baseline snapshot
 aide effectiveness history   # List persisted effectiveness snapshots
 aide jobs status         # Check launchd background job health
+aide pipeline status     # Check ingest/snapshot/backup freshness
 aide serve               # Start dashboard at localhost:8787
 aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal
