@@ -788,3 +788,63 @@ class TestRunbookCommand:
 
         assert result.exit_code != 0
         assert "No data yet. Run 'aide ingest' first." in result.output
+
+
+class TestBriefCommand:
+    def test_brief_prints_markdown(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                ["brief", "--project", "aide", "--task", "ship brief"],
+            )
+
+        assert result.exit_code == 0
+        assert result.output.startswith("# aide Brief")
+        assert "Task: ship brief" in result.output
+        assert "## Verification" in result.output
+        assert "Run full check" in result.output
+
+    def test_brief_writes_output_file(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_digest_session()])
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+        output_path = tmp_path / "briefs" / "aide.md"
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "brief",
+                    "--project",
+                    "aide",
+                    "--task",
+                    "ship brief",
+                    "--out",
+                    str(output_path),
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert f"Wrote brief to {output_path}" in result.output
+        assert output_path.exists()
+        assert "# aide Brief" in output_path.read_text()
+
+    def test_brief_missing_db_exits_nonzero(self, tmp_path):
+        config = _config(tmp_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["brief", "--project", "aide", "--task", "ship brief"],
+            )
+
+        assert result.exit_code != 0
+        assert "No data yet. Run 'aide ingest' first." in result.output

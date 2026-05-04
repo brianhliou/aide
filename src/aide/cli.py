@@ -801,3 +801,40 @@ def runbook_generate(project_name: str, output_path: Path | None):
 
     write_project_runbook(db_path, project_name, output_path)
     click.echo(f"Wrote runbook to {output_path}")
+
+
+@cli.command()
+@click.option(
+    "--project",
+    "project_name",
+    required=True,
+    help="Project name to generate a brief for.",
+)
+@click.option(
+    "--task",
+    required=True,
+    help="Task description for the next agent session.",
+)
+@click.option(
+    "--out",
+    "output_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write Markdown to this file instead of stdout.",
+)
+def brief(project_name: str, task: str, output_path: Path | None):
+    """Generate a task-specific Markdown brief from accepted artifacts."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.brief import render_project_brief, write_project_brief
+
+    if output_path is None:
+        click.echo(render_project_brief(db_path, project_name, task), nl=False)
+        return
+
+    write_project_brief(db_path, project_name, task, output_path)
+    click.echo(f"Wrote brief to {output_path}")
