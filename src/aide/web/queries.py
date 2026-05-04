@@ -531,6 +531,8 @@ def get_sessions_list(
     db_path: Path,
     project_name: str | None = None,
     provider: str | None = None,
+    investigation_signal: str | None = None,
+    investigation_hours: int = 30 * 24,
 ) -> list[dict]:
     """Session list for the sessions page.
 
@@ -538,6 +540,8 @@ def get_sessions_list(
         db_path: Path to SQLite database.
         project_name: Optional filter by project name.
         provider: Optional filter by provider.
+        investigation_signal: Optional investigation action slug.
+        investigation_hours: Lookback window when investigation_signal is set.
 
     Returns:
         [{session_id, project_name, started_at, duration_seconds,
@@ -545,6 +549,20 @@ def get_sessions_list(
     """
     con = get_connection(db_path)
     try:
+        signal_keys = None
+        if investigation_signal:
+            signal_rows = get_investigation_sessions_for_signal(
+                db_path,
+                investigation_signal,
+                hours=investigation_hours,
+                provider=provider,
+            )
+            signal_keys = {
+                (row["provider"], row["session_id"]) for row in signal_rows
+            }
+            if not signal_keys:
+                return []
+
         query = """SELECT
                 s.provider, s.session_id, s.project_name, s.started_at, s.duration_seconds,
                 s.active_duration_seconds,
@@ -566,6 +584,12 @@ def get_sessions_list(
         if provider:
             filters.append("s.provider = ?")
             params.append(provider)
+        if signal_keys is not None:
+            signal_clauses = []
+            for signal_provider, signal_session_id in sorted(signal_keys):
+                signal_clauses.append("(s.provider = ? AND s.session_id = ?)")
+                params.extend([signal_provider, signal_session_id])
+            filters.append("(" + " OR ".join(signal_clauses) + ")")
 
         if filters:
             query += " WHERE " + " AND ".join(filters)
@@ -600,6 +624,35 @@ def get_sessions_list(
         ]
     finally:
         con.close()
+
+
+def get_investigation_sessions_for_signal(
+    db_path: Path,
+    signal: str,
+    hours: int = 30 * 24,
+    provider: str | None = None,
+) -> list[dict]:
+    """Return review-queue sessions matching a normalized action signal."""
+    rows = get_investigation_queue(
+        db_path,
+        hours=hours,
+        provider=provider,
+        limit=100000,
+    )
+    return [
+        row for row in rows
+        if _investigation_row_matches_signal(row, signal)
+    ]
+
+
+def get_investigation_signal_label(signal: str | None) -> str | None:
+    """Human-readable label for a signal slug."""
+    if not signal:
+        return None
+    for label in _investigation_action_labels():
+        if _investigation_label_slug(label) == signal:
+            return label
+    return signal.replace("-", " ")
 
 
 def get_session_detail(
@@ -2000,6 +2053,7 @@ def get_investigation_action_summary(
     flag_breakdown = [
         {
             "label": label,
+            "slug": _investigation_label_slug(label),
             "count": count,
             "pct": count / flagged_count if flagged_count else 0.0,
             "tone": flag_tones.get(label, "gray"),
@@ -2012,6 +2066,7 @@ def get_investigation_action_summary(
     cause_breakdown = [
         {
             "label": label,
+            "slug": _investigation_label_slug(label),
             "count": count,
             "action": _investigation_action_for_label(label),
         }
@@ -2025,6 +2080,7 @@ def get_investigation_action_summary(
     actions = [
         {
             "label": item["label"],
+            "slug": item["slug"],
             "count": item["count"],
             "action": item["action"],
             "source": "flag",
@@ -2034,6 +2090,7 @@ def get_investigation_action_summary(
     actions.extend(
         {
             "label": item["label"],
+            "slug": item["slug"],
             "count": item["count"],
             "action": item["action"],
             "source": "cause",
@@ -2502,6 +2559,56 @@ def _normalize_investigation_flag_label(label: str) -> str:
     if label.endswith(" total errors"):
         return "high total errors"
     return label
+
+
+def _investigation_row_matches_signal(row: dict, signal: str) -> bool:
+    for flag in row["flags"]:
+        label = _normalize_investigation_flag_label(flag["label"])
+        if _investigation_label_slug(label) == signal:
+            return True
+    for cause in row["causes"]:
+        if _investigation_label_slug(cause["label"]) == signal:
+            return True
+    return False
+
+
+def _investigation_action_labels() -> list[str]:
+    return [
+        "permission friction",
+        "missing prefix rules",
+        "permission errors",
+        "file access errors",
+        "edit mismatches",
+        "edits missing paths",
+        "Other errors",
+        "high total errors",
+        "no edits",
+        "expensive no-edit",
+        "zero active time",
+        "low active time",
+        "high cost/edit",
+        "weak attribution",
+        "verification command",
+        "broad search",
+        "mutation command",
+        "browser/system access",
+        "external service",
+        "cache/home access",
+        "other permission friction",
+    ]
+
+
+def _investigation_label_slug(label: str) -> str:
+    chars = []
+    previous_dash = False
+    for char in label.lower():
+        if char.isalnum():
+            chars.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            chars.append("-")
+            previous_dash = True
+    return "".join(chars).strip("-")
 
 
 def _stronger_tone(current: str | None, new: str) -> str:

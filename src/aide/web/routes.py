@@ -99,6 +99,7 @@ def sessions():
     db_path = current_app.config["DB_PATH"]
     sub = current_app.config["SUBSCRIPTION_USER"]
     project = request.args.get("project")
+    signal = request.args.get("signal") or None
     provider = _provider_filter()
     return render_template(
         "sessions.html",
@@ -106,9 +107,12 @@ def sessions():
             db_path,
             project_name=project,
             provider=provider,
+            investigation_signal=signal,
         ),
         project_filter=project,
         provider_filter=provider,
+        signal_filter=signal,
+        signal_label=queries.get_investigation_signal_label(signal),
         subscription_user=sub,
     )
 

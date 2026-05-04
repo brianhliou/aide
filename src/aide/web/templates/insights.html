@@ -208,7 +208,9 @@
             {% for item in investigation_actions.actions[:4] %}
             <div class="border border-gray-200 rounded p-3">
                 <div class="flex items-center justify-between gap-3 mb-1">
-                    <span class="text-sm font-medium text-gray-900">{{ item.label }}</span>
+                    <a href="{{ url_for('dashboard.sessions', signal=item.slug, provider=provider_filter) if provider_filter else url_for('dashboard.sessions', signal=item.slug) }}" class="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline">
+                        {{ item.label }}
+                    </a>
                     <span class="text-xs text-gray-500">{{ item.count }}</span>
                 </div>
                 <p class="text-xs text-gray-600">{{ item.action }}</p>

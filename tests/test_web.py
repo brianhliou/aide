@@ -502,12 +502,24 @@ class TestRoutes:
         assert b"alpha" in resp.data
         assert b"beta" in resp.data
 
+    def test_effectiveness_action_links_to_filtered_sessions(self, effectiveness_client):
+        resp = effectiveness_client.get("/effectiveness")
+        assert b"/sessions?signal=no-edits" in resp.data
+
     def test_effectiveness_provider_filter(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness?provider=codex")
         assert resp.status_code == 200
         assert b"Codex" in resp.data
         assert b"beta" in resp.data
         assert b"alpha" not in resp.data
+
+    def test_sessions_signal_filter(self, effectiveness_client):
+        resp = effectiveness_client.get("/sessions?signal=no-edits")
+        assert resp.status_code == 200
+        assert b"Showing sessions for action" in resp.data
+        assert b"no edits" in resp.data
+        assert b"eff-beta-flagged" in resp.data
+        assert b"eff-alpha-current" not in resp.data
 
     def test_sessions_returns_200(self, client):
         resp = client.get("/sessions")
@@ -1463,6 +1475,33 @@ class TestQueryInvestigationActionSummary:
 
         assert result["flagged_session_count"] == 0
 
+    def test_action_summary_includes_slugs(self, effectiveness_db):
+        result = queries.get_investigation_action_summary(
+            effectiveness_db,
+            hours=30 * 24,
+        )
+
+        by_label = {item["label"]: item for item in result["actions"]}
+        assert by_label["no edits"]["slug"] == "no-edits"
+
+    def test_sessions_for_signal(self, effectiveness_db):
+        result = queries.get_investigation_sessions_for_signal(
+            effectiveness_db,
+            "no-edits",
+            hours=30 * 24,
+        )
+
+        assert [row["session_id"] for row in result] == ["eff-beta-flagged"]
+
+    def test_sessions_list_filters_by_signal(self, effectiveness_db):
+        result = queries.get_sessions_list(
+            effectiveness_db,
+            investigation_signal="no-edits",
+            investigation_hours=30 * 24,
+        )
+
+        assert [row["session_id"] for row in result] == ["eff-beta-flagged"]
+
 
 class TestQueryToolCounts:
     """Tests for get_tool_counts."""
@@ -2026,6 +2065,7 @@ class TestInsightsRoute:
         assert resp.status_code == 200
         assert b"Investigation Actions" in resp.data
         assert b"no edits" in resp.data
+        assert b"/sessions?signal=no-edits" in resp.data
 
     def test_insights_empty_db_returns_200(self, empty_client):
         resp = empty_client.get("/insights")
