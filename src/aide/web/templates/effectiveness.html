@@ -88,7 +88,58 @@
 
 <div class="bg-white rounded-lg shadow p-4 mb-6">
     <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold">Effectiveness Trend</h2>
+        <h2 class="text-lg font-semibold">Daily Snapshot History</h2>
+        {% if snapshot_history %}
+        <span class="text-xs text-gray-500">{{ snapshot_history|length }} snapshots</span>
+        {% endif %}
+    </div>
+    {% if snapshot_history %}
+    {% set latest_snapshot = snapshot_history|last %}
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-4">
+        <div class="border border-gray-200 rounded p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Latest</div>
+            <div class="mt-1 text-sm font-semibold text-gray-900">{{ latest_snapshot.date }}</div>
+            <div class="text-xs text-gray-500">{{ latest_snapshot.session_count }} sessions</div>
+        </div>
+        <div class="border border-gray-200 rounded p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Review</div>
+            <div class="mt-1 text-lg font-semibold {% if latest_snapshot.review_rate > 0.25 %}text-amber-600{% else %}text-gray-900{% endif %}">
+                {{ "{:.0%}".format(latest_snapshot.review_rate) }}
+            </div>
+        </div>
+        <div class="border border-gray-200 rounded p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Errors</div>
+            <div class="mt-1 text-lg font-semibold {% if latest_snapshot.error_rate > 0.15 %}text-red-600{% else %}text-gray-900{% endif %}">
+                {{ "{:.1%}".format(latest_snapshot.error_rate) }}
+            </div>
+        </div>
+        <div class="border border-gray-200 rounded p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">No Edit</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ "{:.0%}".format(latest_snapshot.no_edit_rate) }}</div>
+        </div>
+        <div class="border border-gray-200 rounded p-3">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Attribution</div>
+            <div class="mt-1 text-lg font-semibold text-gray-900">{{ "{:.0%}".format(latest_snapshot.edit_attribution_rate) }}</div>
+        </div>
+    </div>
+    <div class="grid grid-cols-1 {% if not subscription_user %}lg:grid-cols-3{% endif %} gap-6">
+        <div class="{% if not subscription_user %}lg:col-span-2{% endif %} h-72">
+            <canvas id="snapshotHistoryChart"></canvas>
+        </div>
+        {% if not subscription_user %}
+        <div class="h-72">
+            <canvas id="snapshotCostChart"></canvas>
+        </div>
+        {% endif %}
+    </div>
+    {% else %}
+    <p class="text-sm text-gray-500">No persisted snapshots yet.</p>
+    {% endif %}
+</div>
+
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">Live Daily Trend</h2>
         <span class="text-xs text-gray-500">{{ current.session_count }} sessions</span>
     </div>
     {% if trends %}
@@ -275,6 +326,128 @@
 
 {% block scripts %}
 <script>
+const snapshotHistory = {{ snapshot_history|tojson }};
+if (snapshotHistory.length > 0) {
+    const ctx = document.getElementById("snapshotHistoryChart").getContext("2d");
+    new Chart(ctx, {
+        type: "line",
+        data: {
+            labels: snapshotHistory.map(d => d.date),
+            datasets: [
+                {
+                    label: "Review rate",
+                    data: snapshotHistory.map(d => d.review_rate),
+                    borderColor: "#d97706",
+                    backgroundColor: "#d97706",
+                    tension: 0.25
+                },
+                {
+                    label: "Error rate",
+                    data: snapshotHistory.map(d => d.error_rate),
+                    borderColor: "#dc2626",
+                    backgroundColor: "#dc2626",
+                    tension: 0.25
+                },
+                {
+                    label: "No edit rate",
+                    data: snapshotHistory.map(d => d.no_edit_rate),
+                    borderColor: "#2563eb",
+                    backgroundColor: "#2563eb",
+                    tension: 0.25
+                },
+                {
+                    label: "Edit attribution",
+                    data: snapshotHistory.map(d => d.edit_attribution_rate),
+                    borderColor: "#059669",
+                    backgroundColor: "#059669",
+                    tension: 0.25
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "index", intersect: false },
+            plugins: {
+                legend: { position: "bottom" },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return context.dataset.label + ": " + (context.parsed.y * 100).toFixed(1) + "%";
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: "time",
+                    time: { unit: "day", tooltipFormat: "MMM d, yyyy" },
+                    grid: { display: false }
+                },
+                y: {
+                    min: 0,
+                    max: 1,
+                    ticks: {
+                        callback: function(value) {
+                            return (value * 100).toFixed(0) + "%";
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    const costCanvas = document.getElementById("snapshotCostChart");
+    if (costCanvas) {
+        new Chart(costCanvas.getContext("2d"), {
+            type: "line",
+            data: {
+                labels: snapshotHistory.map(d => d.date),
+                datasets: [
+                    {
+                        label: "Avg cost / session",
+                        data: snapshotHistory.map(d => d.avg_cost_per_session),
+                        borderColor: "#7c3aed",
+                        backgroundColor: "rgba(124, 58, 237, 0.14)",
+                        fill: true,
+                        tension: 0.25
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: "index", intersect: false },
+                plugins: {
+                    legend: { position: "bottom" },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ": $" + context.parsed.y.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: "time",
+                        time: { unit: "day", tooltipFormat: "MMM d, yyyy" },
+                        grid: { display: false }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return "$" + value.toFixed(2);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
 const effectivenessTrends = {{ trends|tojson }};
 if (effectivenessTrends.length > 0) {
     const ctx = document.getElementById("effectivenessTrendChart").getContext("2d");

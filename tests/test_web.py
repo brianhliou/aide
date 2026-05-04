@@ -14,6 +14,7 @@ from aide.artifacts import (
 )
 from aide.config import AideConfig
 from aide.db import ingest_sessions, init_db, log_ingestion, rebuild_daily_stats
+from aide.effectiveness import snapshot_effectiveness
 from aide.models import (
     ArtifactEvidence,
     ParsedMessage,
@@ -294,6 +295,14 @@ def effectiveness_db(tmp_path):
     )
     ingest_sessions(db_path, [current_good, current_flagged, previous])
     rebuild_daily_stats(db_path)
+    snapshot_effectiveness(
+        db_path,
+        snapshot_date=datetime(2026, 5, 3, tzinfo=timezone.utc).date(),
+    )
+    snapshot_effectiveness(
+        db_path,
+        snapshot_date=datetime(2026, 5, 4, tzinfo=timezone.utc).date(),
+    )
     return db_path
 
 
@@ -500,7 +509,8 @@ class TestRoutes:
 
     def test_effectiveness_contains_project_signals(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness")
-        assert b"Effectiveness Trend" in resp.data
+        assert b"Daily Snapshot History" in resp.data
+        assert b"Live Daily Trend" in resp.data
         assert b"Action Summary" in resp.data
         assert b"Review Rate" in resp.data
         assert b"Edit Attribution" in resp.data
@@ -1459,12 +1469,37 @@ class TestQueryEffectivenessOverviewPage:
         assert "edit_attribution_rate" in item
         assert "avg_cost_per_session" in item
 
+    def test_snapshot_history_returns_all_scope_by_default(self, effectiveness_db):
+        result = queries.get_effectiveness_snapshot_history(
+            effectiveness_db,
+            days=365,
+        )
+
+        assert [row["date"] for row in result] == ["2026-05-03", "2026-05-04"]
+        assert all(row["scope"] == "all" for row in result)
+        assert all(row["provider"] == "__all__" for row in result)
+        assert result[-1]["session_count"] == 2
+        assert result[-1]["review_rate"] == 0.5
+
+    def test_snapshot_history_filters_provider_scope(self, effectiveness_db):
+        result = queries.get_effectiveness_snapshot_history(
+            effectiveness_db,
+            days=365,
+            provider="codex",
+        )
+
+        assert [row["date"] for row in result] == ["2026-05-03", "2026-05-04"]
+        assert all(row["scope"] == "provider" for row in result)
+        assert all(row["provider"] == "codex" for row in result)
+        assert result[-1]["session_count"] == 1
+
     def test_empty_db_returns_empty_effectiveness_rows(self, empty_db):
         overview = queries.get_effectiveness_overview(empty_db)
 
         assert overview["current"]["session_count"] == 0
         assert queries.get_effectiveness_project_rollups(empty_db) == []
         assert queries.get_effectiveness_daily_trends(empty_db) == []
+        assert queries.get_effectiveness_snapshot_history(empty_db) == []
 
 
 class TestQueryInvestigationActionSummary:

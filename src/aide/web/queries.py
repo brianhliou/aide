@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import shlex
+import sqlite3
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -2254,6 +2255,53 @@ def get_effectiveness_daily_trends(
         {"date": day, **_effectiveness_bucket_result(bucket)}
         for day, bucket in sorted(buckets.items())
     ]
+
+
+def get_effectiveness_snapshot_history(
+    db_path: Path,
+    days: int = 180,
+    provider: str | None = None,
+) -> list[dict]:
+    """Persisted all/provider effectiveness snapshot series."""
+    cutoff = date.today() - timedelta(days=days)
+    scope = "provider" if provider else "all"
+    provider_value = provider or "__all__"
+
+    con = get_connection(db_path)
+    try:
+        rows = con.execute(
+            """SELECT snapshot_date AS date,
+                      window_days,
+                      scope,
+                      provider,
+                      project_name,
+                      session_count,
+                      total_cost,
+                      avg_cost_per_session,
+                      avg_active_seconds,
+                      error_rate,
+                      no_edit_session_count,
+                      no_edit_rate,
+                      edit_attribution_rate,
+                      cost_per_edit,
+                      review_session_count,
+                      review_rate,
+                      review_score
+            FROM effectiveness_snapshots
+            WHERE snapshot_date >= ?
+              AND scope = ?
+              AND provider = ?
+              AND project_name = '__all__'
+            ORDER BY snapshot_date""",
+            (cutoff.isoformat(), scope, provider_value),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.OperationalError as exc:
+        if "effectiveness_snapshots" not in str(exc):
+            raise
+        return []
+    finally:
+        con.close()
 
 
 def _collect_effectiveness_periods(
