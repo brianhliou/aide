@@ -565,6 +565,28 @@ class TestRoutes:
         assert b"beta" in resp.data
         assert b"alpha" not in resp.data
 
+    def test_effectiveness_explains_no_meaningful_snapshot_changes(self, tmp_path):
+        db_path = tmp_path / "test-aide-no-delta.db"
+        init_db(db_path)
+        ingest_sessions(db_path, [_make_test_session(session_id="same-alpha")])
+        snapshot_effectiveness(
+            db_path,
+            snapshot_date=datetime(2026, 5, 3, tzinfo=timezone.utc).date(),
+        )
+        snapshot_effectiveness(
+            db_path,
+            snapshot_date=datetime(2026, 5, 4, tzinfo=timezone.utc).date(),
+        )
+        config = _make_config(db_path)
+        app = create_app(config)
+        app.config["TESTING"] = True
+
+        with app.test_client() as client:
+            resp = client.get("/effectiveness")
+
+        assert resp.status_code == 200
+        assert b"No meaningful snapshot changes between the latest two dates" in resp.data
+
     def test_sessions_signal_filter(self, effectiveness_client):
         resp = effectiveness_client.get("/sessions?signal=no-edits")
         assert resp.status_code == 200

@@ -146,6 +146,16 @@
         <span class="text-xs text-gray-500">{{ snapshot_history|length }} snapshots</span>
     </div>
 </div>
+{% else %}
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-start justify-between gap-4">
+        <div>
+            <h2 class="text-lg font-semibold">Snapshot Callouts</h2>
+            <p class="mt-1 text-sm text-gray-600">No meaningful snapshot changes between the latest two dates.</p>
+        </div>
+        <span class="text-xs text-gray-500">{{ snapshot_history[-2].date }} to {{ snapshot_history[-1].date }}</span>
+    </div>
+</div>
 {% endif %}
 
 <div class="bg-white rounded-lg shadow p-4 mb-6">
