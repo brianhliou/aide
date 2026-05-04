@@ -763,3 +763,41 @@ def _artifact_source_label(artifact: dict) -> str | None:
     if not provider or not session_id:
         return None
     return f"{provider}:{session_id}"
+
+
+@cli.group()
+def runbook():
+    """Generate runbooks from accepted artifacts."""
+    pass
+
+
+@runbook.command("generate")
+@click.option(
+    "--project",
+    "project_name",
+    required=True,
+    help="Project name to generate a runbook for.",
+)
+@click.option(
+    "--out",
+    "output_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write Markdown to this file instead of stdout.",
+)
+def runbook_generate(project_name: str, output_path: Path | None):
+    """Generate a deterministic Markdown runbook for a project."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.runbook import render_project_runbook, write_project_runbook
+
+    if output_path is None:
+        click.echo(render_project_runbook(db_path, project_name), nl=False)
+        return
+
+    write_project_runbook(db_path, project_name, output_path)
+    click.echo(f"Wrote runbook to {output_path}")
