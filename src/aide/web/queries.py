@@ -2304,6 +2304,122 @@ def get_effectiveness_snapshot_history(
         con.close()
 
 
+_SNAPSHOT_CALLOUT_METRICS = (
+    {
+        "key": "review_rate",
+        "label": "Review rate",
+        "lower_is_better": True,
+        "format": "percent",
+        "threshold": 0.02,
+    },
+    {
+        "key": "error_rate",
+        "label": "Error rate",
+        "lower_is_better": True,
+        "format": "percent",
+        "threshold": 0.02,
+    },
+    {
+        "key": "no_edit_rate",
+        "label": "No-edit rate",
+        "lower_is_better": True,
+        "format": "percent",
+        "threshold": 0.02,
+        "signal": "no-edits",
+    },
+    {
+        "key": "edit_attribution_rate",
+        "label": "Edit attribution",
+        "lower_is_better": False,
+        "format": "percent",
+        "threshold": 0.02,
+    },
+    {
+        "key": "avg_cost_per_session",
+        "label": "Avg cost / session",
+        "lower_is_better": True,
+        "format": "currency",
+        "threshold": 0.05,
+    },
+)
+
+
+def get_effectiveness_snapshot_callouts(
+    db_path: Path,
+    provider: str | None = None,
+    limit: int = 6,
+) -> list[dict]:
+    """Largest changes between the latest two persisted snapshot dates."""
+    con = get_connection(db_path)
+    try:
+        dates = [
+            row["snapshot_date"]
+            for row in con.execute(
+                """SELECT DISTINCT snapshot_date
+                FROM effectiveness_snapshots
+                ORDER BY snapshot_date DESC
+                LIMIT 2"""
+            ).fetchall()
+        ]
+        if len(dates) < 2:
+            return []
+
+        latest_date, previous_date = dates
+        rows = con.execute(
+            """SELECT *
+            FROM effectiveness_snapshots
+            WHERE snapshot_date IN (?, ?)
+            ORDER BY scope, provider, project_name""",
+            (latest_date, previous_date),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "effectiveness_snapshots" not in str(exc):
+            raise
+        return []
+    finally:
+        con.close()
+
+    latest = {}
+    previous = {}
+    for row in rows:
+        item = dict(row)
+        if provider and not _snapshot_row_matches_provider(item, provider):
+            continue
+        if not provider and item["scope"] not in {"all", "provider", "project"}:
+            continue
+        key = (item["scope"], item["provider"], item["project_name"])
+        if item["snapshot_date"] == latest_date:
+            latest[key] = item
+        elif item["snapshot_date"] == previous_date:
+            previous[key] = item
+
+    callouts = []
+    for key, current in latest.items():
+        baseline = previous.get(key)
+        if baseline is None:
+            continue
+        if (current["session_count"] or 0) == 0 and (baseline["session_count"] or 0) == 0:
+            continue
+        callouts.extend(
+            _snapshot_metric_callouts(
+                current,
+                baseline,
+                latest_date=latest_date,
+                previous_date=previous_date,
+            )
+        )
+
+    callouts.sort(
+        key=lambda item: (
+            0 if item["kind"] == "regression" else 1,
+            -item["score"],
+            item["target_label"],
+            item["metric_label"],
+        )
+    )
+    return callouts[:limit]
+
+
 def _collect_effectiveness_periods(
     db_path: Path,
     days: int,
@@ -2400,6 +2516,82 @@ def _collect_effectiveness_periods(
             buckets[key][period]["review_score"] += row["score"]
 
     return buckets
+
+
+def _snapshot_row_matches_provider(row: dict, provider: str) -> bool:
+    if row["scope"] == "all":
+        return False
+    return row["provider"] == provider
+
+
+def _snapshot_metric_callouts(
+    current: dict,
+    baseline: dict,
+    *,
+    latest_date: str,
+    previous_date: str,
+) -> list[dict]:
+    callouts = []
+    for metric in _SNAPSHOT_CALLOUT_METRICS:
+        key = metric["key"]
+        latest_value = float(current[key] or 0)
+        previous_value = float(baseline[key] or 0)
+        delta = latest_value - previous_value
+        threshold = float(metric["threshold"])
+        if metric["format"] == "currency":
+            if previous_value > 0:
+                score = abs(delta) / previous_value
+            else:
+                score = abs(delta)
+            if score < threshold:
+                continue
+        else:
+            score = abs(delta)
+            if score < threshold:
+                continue
+
+        lower_is_better = bool(metric["lower_is_better"])
+        worsened = delta > 0 if lower_is_better else delta < 0
+        callouts.append({
+            "kind": "regression" if worsened else "improvement",
+            "tone": "red" if worsened else "emerald",
+            "metric": key,
+            "metric_label": metric["label"],
+            "target_label": _snapshot_target_label(current),
+            "scope": current["scope"],
+            "provider": None if current["provider"] == "__all__" else current["provider"],
+            "project_name": (
+                None
+                if current["project_name"] == "__all__"
+                else current["project_name"]
+            ),
+            "signal": metric.get("signal"),
+            "latest_value": latest_value,
+            "previous_value": previous_value,
+            "delta": delta,
+            "delta_label": _format_snapshot_delta(delta, metric["format"]),
+            "score": score,
+            "latest_date": latest_date,
+            "previous_date": previous_date,
+            "session_count": current["session_count"],
+            "previous_session_count": baseline["session_count"],
+        })
+    return callouts
+
+
+def _snapshot_target_label(row: dict) -> str:
+    if row["scope"] == "all":
+        return "All providers"
+    if row["scope"] == "provider":
+        return row["provider"]
+    return f"{row['provider']}/{row['project_name']}"
+
+
+def _format_snapshot_delta(delta: float, format_name: str) -> str:
+    if format_name == "currency":
+        sign = "+" if delta >= 0 else "-"
+        return f"{sign}${abs(delta):.2f}"
+    return f"{delta * 100:+.0f} pts"
 
 
 def _empty_effectiveness_periods() -> dict[str, dict]:

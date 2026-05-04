@@ -1,5 +1,6 @@
 """Tests for the web dashboard — app factory, routes, and query functions."""
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -303,6 +304,39 @@ def effectiveness_db(tmp_path):
         db_path,
         snapshot_date=datetime(2026, 5, 4, tzinfo=timezone.utc).date(),
     )
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            """UPDATE effectiveness_snapshots
+            SET review_rate = 0.50,
+                error_rate = 0.05,
+                avg_cost_per_session = 3.0
+            WHERE snapshot_date = '2026-05-03'
+              AND scope = 'all'"""
+        )
+        con.execute(
+            """UPDATE effectiveness_snapshots
+            SET review_rate = 0.65,
+                error_rate = 0.08,
+                avg_cost_per_session = 4.5
+            WHERE snapshot_date = '2026-05-04'
+              AND scope = 'all'"""
+        )
+        con.execute(
+            """UPDATE effectiveness_snapshots
+            SET no_edit_rate = 0.20
+            WHERE snapshot_date = '2026-05-03'
+              AND provider = 'codex'"""
+        )
+        con.execute(
+            """UPDATE effectiveness_snapshots
+            SET no_edit_rate = 0.80
+            WHERE snapshot_date = '2026-05-04'
+              AND provider = 'codex'"""
+        )
+        con.commit()
+    finally:
+        con.close()
     return db_path
 
 
@@ -510,6 +544,7 @@ class TestRoutes:
     def test_effectiveness_contains_project_signals(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness")
         assert b"Daily Snapshot History" in resp.data
+        assert b"Snapshot Callouts" in resp.data
         assert b"Live Daily Trend" in resp.data
         assert b"Action Summary" in resp.data
         assert b"Review Rate" in resp.data
@@ -1479,7 +1514,7 @@ class TestQueryEffectivenessOverviewPage:
         assert all(row["scope"] == "all" for row in result)
         assert all(row["provider"] == "__all__" for row in result)
         assert result[-1]["session_count"] == 2
-        assert result[-1]["review_rate"] == 0.5
+        assert result[-1]["review_rate"] == 0.65
 
     def test_snapshot_history_filters_provider_scope(self, effectiveness_db):
         result = queries.get_effectiveness_snapshot_history(
@@ -1493,6 +1528,31 @@ class TestQueryEffectivenessOverviewPage:
         assert all(row["provider"] == "codex" for row in result)
         assert result[-1]["session_count"] == 1
 
+    def test_snapshot_callouts_compare_latest_two_dates(self, effectiveness_db):
+        result = queries.get_effectiveness_snapshot_callouts(
+            effectiveness_db,
+            limit=10,
+        )
+
+        assert result
+        assert result[0]["kind"] == "regression"
+        labels = {(row["target_label"], row["metric"]) for row in result}
+        assert ("All providers", "review_rate") in labels
+        assert ("All providers", "error_rate") in labels
+        assert ("codex", "no_edit_rate") in labels
+        assert ("codex/beta", "no_edit_rate") in labels
+
+    def test_snapshot_callouts_filter_provider_scope(self, effectiveness_db):
+        result = queries.get_effectiveness_snapshot_callouts(
+            effectiveness_db,
+            provider="codex",
+            limit=10,
+        )
+
+        assert result
+        assert all(row["provider"] == "codex" for row in result)
+        assert {row["target_label"] for row in result} == {"codex", "codex/beta"}
+
     def test_empty_db_returns_empty_effectiveness_rows(self, empty_db):
         overview = queries.get_effectiveness_overview(empty_db)
 
@@ -1500,6 +1560,7 @@ class TestQueryEffectivenessOverviewPage:
         assert queries.get_effectiveness_project_rollups(empty_db) == []
         assert queries.get_effectiveness_daily_trends(empty_db) == []
         assert queries.get_effectiveness_snapshot_history(empty_db) == []
+        assert queries.get_effectiveness_snapshot_callouts(empty_db) == []
 
 
 class TestQueryInvestigationActionSummary:

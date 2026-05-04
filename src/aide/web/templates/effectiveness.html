@@ -86,6 +86,58 @@
     </div>
 </div>
 
+{% if snapshot_callouts %}
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">Snapshot Callouts</h2>
+        <span class="text-xs text-gray-500">{{ snapshot_callouts[0].previous_date }} to {{ snapshot_callouts[0].latest_date }}</span>
+    </div>
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {% for item in snapshot_callouts %}
+        <div class="border rounded p-3 {% if item.kind == 'regression' %}border-red-200 bg-red-50{% else %}border-emerald-200 bg-emerald-50{% endif %}">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <div class="text-xs uppercase tracking-wide {% if item.kind == 'regression' %}text-red-700{% else %}text-emerald-700{% endif %}">
+                        {{ item.kind }}
+                    </div>
+                    <div class="mt-1 text-sm font-semibold text-gray-900">{{ item.metric_label }}</div>
+                </div>
+                <div class="text-sm font-semibold {% if item.kind == 'regression' %}text-red-700{% else %}text-emerald-700{% endif %}">
+                    {{ item.delta_label }}
+                </div>
+            </div>
+            <div class="mt-2 text-sm text-gray-700">
+                {{ item.target_label }} moved from
+                {% if item.metric == 'avg_cost_per_session' %}
+                    {{ "${:,.2f}".format(item.previous_value) }} to {{ "${:,.2f}".format(item.latest_value) }}.
+                {% else %}
+                    {{ "{:.0%}".format(item.previous_value) }} to {{ "{:.0%}".format(item.latest_value) }}.
+                {% endif %}
+            </div>
+            <div class="mt-3 flex flex-wrap gap-2">
+                {% if item.signal %}
+                <a href="{{ url_for('dashboard.sessions', signal=item.signal, provider=item.provider, project=item.project_name) if item.provider and item.project_name else url_for('dashboard.sessions', signal=item.signal, provider=item.provider) if item.provider else url_for('dashboard.sessions', signal=item.signal) }}"
+                   class="text-xs font-medium text-blue-700 hover:text-blue-900">
+                    Review sessions
+                </a>
+                {% elif item.project_name %}
+                <a href="{{ url_for('dashboard.sessions', project=item.project_name, provider=item.provider) if item.provider else url_for('dashboard.sessions', project=item.project_name) }}"
+                   class="text-xs font-medium text-blue-700 hover:text-blue-900">
+                    View project sessions
+                </a>
+                {% elif item.provider %}
+                <a href="{{ url_for('dashboard.sessions', provider=item.provider) }}"
+                   class="text-xs font-medium text-blue-700 hover:text-blue-900">
+                    View provider sessions
+                </a>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
 <div class="bg-white rounded-lg shadow p-4 mb-6">
     <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">Daily Snapshot History</h2>
