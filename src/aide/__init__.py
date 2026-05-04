@@ -1,3 +1,3 @@
-"""aide — AI Developer Effectiveness dashboard."""
+"""aide — local AI developer-effectiveness tooling."""
 
 __version__ = "0.1.0"

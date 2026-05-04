@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -80,6 +80,57 @@ def _digest_session() -> ParsedSession:
         file_write_count=0,
         file_edit_count=0,
         bash_count=1,
+    )
+
+
+def _action_session() -> ParsedSession:
+    now = datetime.now(timezone.utc) - timedelta(hours=1)
+    calls = [
+        ToolCall(
+            tool_name="Read",
+            file_path=f"src/file_{index}.py",
+            timestamp=now,
+        )
+        for index in range(20)
+    ]
+    message = ParsedMessage(
+        uuid="msg-action",
+        parent_uuid=None,
+        session_id="action-1",
+        timestamp=now,
+        role="assistant",
+        type="assistant",
+        input_tokens=100,
+        output_tokens=50,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        content_length=100,
+        tool_calls=calls,
+    )
+    return ParsedSession(
+        provider="codex",
+        session_id="action-1",
+        project_path="/Users/test/projects/aide",
+        project_name="aide",
+        source_file="/fake/action-1.jsonl",
+        started_at=now,
+        ended_at=now + timedelta(minutes=20),
+        messages=[message],
+        duration_seconds=1200,
+        total_input_tokens=100,
+        total_output_tokens=50,
+        total_cache_read_tokens=0,
+        total_cache_creation_tokens=0,
+        estimated_cost_usd=0.25,
+        message_count=1,
+        user_message_count=0,
+        assistant_message_count=1,
+        tool_call_count=len(calls),
+        file_read_count=len(calls),
+        file_write_count=0,
+        file_edit_count=0,
+        bash_count=0,
+        active_duration_seconds=1200,
     )
 
 
@@ -614,6 +665,48 @@ class TestDigestCommand:
 
         assert result.exit_code != 0
         assert "Session 'missing' not found." in result.output
+
+
+class TestActionsCommand:
+    def test_actions_help_is_available(self):
+        result = CliRunner().invoke(cli, ["actions", "--help"])
+
+        assert result.exit_code == 0
+        assert "propose" in result.output
+
+    def test_actions_propose_dry_run(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_action_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["actions", "propose", "--signal", "no-edits", "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "Action proposals for no edits" in result.output
+        assert "Dry run: 1 artifact proposal" in result.output
+        assert "planner_signal" in result.output
+        assert list_artifacts(config.db_path) == []
+
+    def test_actions_propose_persists_artifacts(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_action_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["actions", "propose", "--signal", "no-edits"],
+            )
+
+        artifacts = list_artifacts(config.db_path)
+        assert result.exit_code == 0
+        assert "Saved 1 artifact proposal" in result.output
+        assert len(artifacts) == 1
+        assert artifacts[0]["artifact_type"] == "planner_signal"
 
 
 class TestArtifactsCommand:

@@ -22,6 +22,10 @@
                        class="{% if request.path == '/projects' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
                         Projects
                     </a>
+                    <a href="/effectiveness"
+                       class="{% if request.path == '/effectiveness' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Effectiveness
+                    </a>
                     <a href="/sessions"
                        class="{% if request.path.startswith('/sessions') %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
                         Sessions

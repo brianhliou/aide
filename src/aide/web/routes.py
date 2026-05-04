@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 from flask import Blueprint, current_app, redirect, render_template, request
 
+from aide.actions import build_action_proposals, save_action_proposals
 from aide.artifacts import accept_artifact, reject_artifact
 from aide.brief import render_project_brief
 from aide.config import save_config_value
@@ -66,12 +67,40 @@ def projects():
     )
 
 
+@bp.route("/effectiveness")
+def effectiveness():
+    """Effectiveness page with project-level improvement signals."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    provider = _provider_filter()
+    return render_template(
+        "effectiveness.html",
+        overview=queries.get_effectiveness_overview(db_path, provider=provider),
+        projects=queries.get_effectiveness_project_rollups(db_path, provider=provider),
+        trends=queries.get_effectiveness_daily_trends(db_path, provider=provider),
+        investigation_actions=queries.get_investigation_action_summary(
+            db_path,
+            hours=30 * 24,
+            provider=provider,
+        ),
+        investigation_queue=queries.get_investigation_queue(
+            db_path,
+            hours=30 * 24,
+            provider=provider,
+            limit=6,
+        ),
+        provider_filter=provider,
+        subscription_user=sub,
+    )
+
+
 @bp.route("/sessions")
 def sessions():
     """Sessions list, optionally filtered by project."""
     db_path = current_app.config["DB_PATH"]
     sub = current_app.config["SUBSCRIPTION_USER"]
     project = request.args.get("project")
+    signal = request.args.get("signal") or None
     provider = _provider_filter()
     return render_template(
         "sessions.html",
@@ -79,9 +108,12 @@ def sessions():
             db_path,
             project_name=project,
             provider=provider,
+            investigation_signal=signal,
         ),
         project_filter=project,
         provider_filter=provider,
+        signal_filter=signal,
+        signal_label=queries.get_investigation_signal_label(signal),
         subscription_user=sub,
     )
 
@@ -155,6 +187,10 @@ def insights():
             db_path,
             provider=provider,
         ),
+        investigation_actions=queries.get_investigation_action_summary(
+            db_path,
+            provider=provider,
+        ),
         permission_friction=queries.get_permission_friction_summary(
             db_path,
             provider=provider,
@@ -216,6 +252,28 @@ def artifact_reject(artifact_id: int):
     except ValueError as exc:
         return render_template("404.html", message=str(exc)), 400
     return redirect(_artifact_redirect_url())
+
+
+@bp.route("/actions/propose", methods=["POST"])
+def action_propose():
+    """Create proposed artifacts from an investigation action."""
+    db_path = current_app.config["DB_PATH"]
+    signal = request.form.get("signal") or ""
+    provider = request.form.get("provider") or None
+    project = request.form.get("project") or None
+    hours = int(request.form.get("hours") or 30 * 24)
+    result = build_action_proposals(
+        db_path,
+        signal,
+        provider=provider,
+        project_name=project,
+        hours=hours,
+    )
+    save_action_proposals(db_path, result)
+    params = {"status": "proposed"}
+    if project:
+        params["project"] = project
+    return redirect("/artifacts" + f"?{urlencode(params)}")
 
 
 @bp.route("/runbook")

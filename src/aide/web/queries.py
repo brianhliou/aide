@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import shlex
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from pathlib import Path as _Path
@@ -531,6 +531,8 @@ def get_sessions_list(
     db_path: Path,
     project_name: str | None = None,
     provider: str | None = None,
+    investigation_signal: str | None = None,
+    investigation_hours: int = 30 * 24,
 ) -> list[dict]:
     """Session list for the sessions page.
 
@@ -538,6 +540,8 @@ def get_sessions_list(
         db_path: Path to SQLite database.
         project_name: Optional filter by project name.
         provider: Optional filter by provider.
+        investigation_signal: Optional investigation action slug.
+        investigation_hours: Lookback window when investigation_signal is set.
 
     Returns:
         [{session_id, project_name, started_at, duration_seconds,
@@ -545,6 +549,20 @@ def get_sessions_list(
     """
     con = get_connection(db_path)
     try:
+        signal_keys = None
+        if investigation_signal:
+            signal_rows = get_investigation_sessions_for_signal(
+                db_path,
+                investigation_signal,
+                hours=investigation_hours,
+                provider=provider,
+            )
+            signal_keys = {
+                (row["provider"], row["session_id"]) for row in signal_rows
+            }
+            if not signal_keys:
+                return []
+
         query = """SELECT
                 s.provider, s.session_id, s.project_name, s.started_at, s.duration_seconds,
                 s.active_duration_seconds,
@@ -566,6 +584,12 @@ def get_sessions_list(
         if provider:
             filters.append("s.provider = ?")
             params.append(provider)
+        if signal_keys is not None:
+            signal_clauses = []
+            for signal_provider, signal_session_id in sorted(signal_keys):
+                signal_clauses.append("(s.provider = ? AND s.session_id = ?)")
+                params.extend([signal_provider, signal_session_id])
+            filters.append("(" + " OR ".join(signal_clauses) + ")")
 
         if filters:
             query += " WHERE " + " AND ".join(filters)
@@ -600,6 +624,35 @@ def get_sessions_list(
         ]
     finally:
         con.close()
+
+
+def get_investigation_sessions_for_signal(
+    db_path: Path,
+    signal: str,
+    hours: int = 30 * 24,
+    provider: str | None = None,
+) -> list[dict]:
+    """Return review-queue sessions matching a normalized action signal."""
+    rows = get_investigation_queue(
+        db_path,
+        hours=hours,
+        provider=provider,
+        limit=100000,
+    )
+    return [
+        row for row in rows
+        if _investigation_row_matches_signal(row, signal)
+    ]
+
+
+def get_investigation_signal_label(signal: str | None) -> str | None:
+    """Human-readable label for a signal slug."""
+    if not signal:
+        return None
+    for label in _investigation_action_labels():
+        if _investigation_label_slug(label) == signal:
+            return label
+    return signal.replace("-", " ")
 
 
 def get_session_detail(
@@ -1920,6 +1973,7 @@ def get_investigation_queue(
             rows.append({
                 "provider": session["provider"],
                 "session_id": session["session_id"],
+                "project_path": session["project_path"],
                 "project_name": session["project_name"],
                 "custom_title": session["custom_title"],
                 "started_at": session["started_at"],
@@ -1951,6 +2005,452 @@ def get_investigation_queue(
         return rows[:limit]
     finally:
         con.close()
+
+
+def get_investigation_action_summary(
+    db_path: Path,
+    hours: int = 36,
+    provider: str | None = None,
+) -> dict:
+    """Aggregate investigation queue signals into repeat causes and actions."""
+    rows = get_investigation_queue(
+        db_path,
+        hours=hours,
+        provider=provider,
+        limit=100000,
+    )
+    flag_counts: dict[str, int] = {}
+    flag_tones: dict[str, str] = {}
+    cause_counts: dict[str, int] = {}
+    project_counts: dict[tuple[str, str], dict] = {}
+    total_score = 0
+
+    for row in rows:
+        total_score += row["score"]
+        project_key = (row["provider"], row["project_name"])
+        if project_key not in project_counts:
+            project_counts[project_key] = {
+                "provider": row["provider"],
+                "project_name": row["project_name"],
+                "count": 0,
+                "score": 0,
+            }
+        project_counts[project_key]["count"] += 1
+        project_counts[project_key]["score"] += row["score"]
+
+        for flag in row["flags"]:
+            label = _normalize_investigation_flag_label(flag["label"])
+            flag_counts[label] = flag_counts.get(label, 0) + 1
+            flag_tones[label] = _stronger_tone(
+                flag_tones.get(label),
+                flag.get("tone", "gray"),
+            )
+
+        for cause in row["causes"]:
+            label = cause["label"]
+            cause_counts[label] = cause_counts.get(label, 0) + cause["count"]
+
+    flagged_count = len(rows)
+    flag_breakdown = [
+        {
+            "label": label,
+            "slug": _investigation_label_slug(label),
+            "count": count,
+            "pct": count / flagged_count if flagged_count else 0.0,
+            "tone": flag_tones.get(label, "gray"),
+            "action": _investigation_action_for_label(label),
+        }
+        for label, count in flag_counts.items()
+    ]
+    flag_breakdown.sort(key=lambda item: item["count"], reverse=True)
+
+    cause_breakdown = [
+        {
+            "label": label,
+            "slug": _investigation_label_slug(label),
+            "count": count,
+            "action": _investigation_action_for_label(label),
+        }
+        for label, count in cause_counts.items()
+    ]
+    cause_breakdown.sort(key=lambda item: item["count"], reverse=True)
+
+    project_breakdown = list(project_counts.values())
+    project_breakdown.sort(key=lambda item: (item["score"], item["count"]), reverse=True)
+
+    actions = [
+        {
+            "label": item["label"],
+            "slug": item["slug"],
+            "count": item["count"],
+            "action": item["action"],
+            "source": "flag",
+        }
+        for item in flag_breakdown[:6]
+    ]
+    actions.extend(
+        {
+            "label": item["label"],
+            "slug": item["slug"],
+            "count": item["count"],
+            "action": item["action"],
+            "source": "cause",
+        }
+        for item in cause_breakdown[:6]
+        if item["label"] not in {action["label"] for action in actions}
+    )
+    actions.sort(key=lambda item: item["count"], reverse=True)
+
+    return {
+        "window_hours": hours,
+        "flagged_session_count": flagged_count,
+        "total_score": total_score,
+        "flag_breakdown": flag_breakdown,
+        "cause_breakdown": cause_breakdown,
+        "project_breakdown": project_breakdown[:8],
+        "actions": actions[:6],
+    }
+
+
+def get_effectiveness_overview(
+    db_path: Path,
+    days: int = 30,
+    provider: str | None = None,
+) -> dict:
+    """Current-vs-previous effectiveness summary for the effectiveness page."""
+    buckets = _collect_effectiveness_periods(db_path, days=days, provider=provider)
+    current = _effectiveness_bucket_result(buckets[("__all__", "__all__")]["current"])
+    previous = _effectiveness_bucket_result(buckets[("__all__", "__all__")]["previous"])
+    return {
+        "window_days": days,
+        "current": current,
+        "previous": previous,
+        "deltas": {
+            "avg_cost_per_session": _ratio_delta(
+                current["avg_cost_per_session"],
+                previous["avg_cost_per_session"],
+            ),
+            "avg_active_seconds": _ratio_delta(
+                current["avg_active_seconds"],
+                previous["avg_active_seconds"],
+            ),
+            "review_rate": current["review_rate"] - previous["review_rate"],
+            "edit_attribution_rate": (
+                current["edit_attribution_rate"] - previous["edit_attribution_rate"]
+            ),
+            "error_rate": current["error_rate"] - previous["error_rate"],
+        },
+    }
+
+
+def get_effectiveness_project_rollups(
+    db_path: Path,
+    days: int = 30,
+    provider: str | None = None,
+) -> list[dict]:
+    """Project/provider effectiveness rows with previous-window comparison."""
+    buckets = _collect_effectiveness_periods(db_path, days=days, provider=provider)
+    rows = []
+    for key, periods in buckets.items():
+        if key == ("__all__", "__all__"):
+            continue
+        current = _effectiveness_bucket_result(periods["current"])
+        if current["session_count"] == 0:
+            continue
+        previous = _effectiveness_bucket_result(periods["previous"])
+        rows.append({
+            "provider": key[0],
+            "project_name": key[1],
+            "current": current,
+            "previous": previous,
+            "deltas": {
+                "avg_cost_per_session": _ratio_delta(
+                    current["avg_cost_per_session"],
+                    previous["avg_cost_per_session"],
+                ),
+                "avg_active_seconds": _ratio_delta(
+                    current["avg_active_seconds"],
+                    previous["avg_active_seconds"],
+                ),
+                "review_rate": current["review_rate"] - previous["review_rate"],
+                "edit_attribution_rate": (
+                    current["edit_attribution_rate"]
+                    - previous["edit_attribution_rate"]
+                ),
+                "error_rate": current["error_rate"] - previous["error_rate"],
+            },
+        })
+
+    rows.sort(
+        key=lambda row: (
+            row["current"]["review_rate"],
+            row["current"]["error_rate"],
+            row["current"]["avg_cost_per_session"],
+            row["current"]["session_count"],
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def get_effectiveness_daily_trends(
+    db_path: Path,
+    days: int = 90,
+    provider: str | None = None,
+) -> list[dict]:
+    """Daily effectiveness trend series for charting rates over time."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff.isoformat(), provider) if provider else (cutoff.isoformat(),)
+        session_rows = con.execute(
+            f"""SELECT provider, session_id, project_name, started_at,
+                      estimated_cost_usd, active_duration_seconds,
+                      tool_call_count, tool_error_count,
+                      file_edit_count, file_write_count
+            FROM sessions
+            WHERE started_at >= ? {provider_filter}
+            ORDER BY started_at""",
+            params,
+        ).fetchall()
+
+        buckets: defaultdict[str, dict] = defaultdict(_empty_effectiveness_bucket)
+        for row in session_rows:
+            day = row["started_at"][:10]
+            _add_session_to_effectiveness_bucket(buckets[day], row)
+
+        joined_provider_filter = "AND s.provider = ?" if provider else ""
+        edit_rows = con.execute(
+            f"""SELECT s.started_at, tc.file_path
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {joined_provider_filter}
+              AND tc.tool_name IN ('Edit', 'Write')""",
+            params,
+        ).fetchall()
+        for row in edit_rows:
+            _add_edit_call_to_effectiveness_bucket(buckets[row["started_at"][:10]], row)
+    finally:
+        con.close()
+
+    flagged_rows = get_investigation_queue(
+        db_path,
+        hours=days * 24,
+        provider=provider,
+        limit=100000,
+    )
+    for row in flagged_rows:
+        started_at = row.get("started_at")
+        if not started_at:
+            continue
+        bucket = buckets[started_at[:10]]
+        bucket["review_session_count"] += 1
+        bucket["review_score"] += row["score"]
+
+    return [
+        {"date": day, **_effectiveness_bucket_result(bucket)}
+        for day, bucket in sorted(buckets.items())
+    ]
+
+
+def _collect_effectiveness_periods(
+    db_path: Path,
+    days: int,
+    provider: str | None,
+) -> defaultdict[tuple[str, str], dict[str, dict]]:
+    now = datetime.now(timezone.utc)
+    current_cutoff = now - timedelta(days=days)
+    previous_cutoff = now - timedelta(days=days * 2)
+    buckets: defaultdict[tuple[str, str], dict[str, dict]] = defaultdict(
+        _empty_effectiveness_periods,
+    )
+
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (
+            (previous_cutoff.isoformat(), provider)
+            if provider else (previous_cutoff.isoformat(),)
+        )
+        session_rows = con.execute(
+            f"""SELECT provider, session_id, project_name, started_at,
+                      estimated_cost_usd, active_duration_seconds,
+                      tool_call_count, tool_error_count,
+                      file_edit_count, file_write_count
+            FROM sessions
+            WHERE started_at >= ? {provider_filter}""",
+            params,
+        ).fetchall()
+
+        for row in session_rows:
+            period = _effectiveness_period(
+                row["started_at"],
+                current_cutoff=current_cutoff,
+                previous_cutoff=previous_cutoff,
+            )
+            if period is None:
+                continue
+            _add_session_to_effectiveness_bucket(
+                buckets[(row["provider"], row["project_name"])][period],
+                row,
+            )
+            _add_session_to_effectiveness_bucket(
+                buckets[("__all__", "__all__")][period],
+                row,
+            )
+
+        joined_provider_filter = "AND s.provider = ?" if provider else ""
+        edit_rows = con.execute(
+            f"""SELECT s.provider, s.project_name, s.started_at, tc.file_path
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {joined_provider_filter}
+              AND tc.tool_name IN ('Edit', 'Write')""",
+            params,
+        ).fetchall()
+
+        for row in edit_rows:
+            period = _effectiveness_period(
+                row["started_at"],
+                current_cutoff=current_cutoff,
+                previous_cutoff=previous_cutoff,
+            )
+            if period is None:
+                continue
+            _add_edit_call_to_effectiveness_bucket(
+                buckets[(row["provider"], row["project_name"])][period],
+                row,
+            )
+            _add_edit_call_to_effectiveness_bucket(
+                buckets[("__all__", "__all__")][period],
+                row,
+            )
+    finally:
+        con.close()
+
+    flagged_rows = get_investigation_queue(
+        db_path,
+        hours=days * 48,
+        provider=provider,
+        limit=100000,
+    )
+    for row in flagged_rows:
+        period = _effectiveness_period(
+            row["started_at"],
+            current_cutoff=current_cutoff,
+            previous_cutoff=previous_cutoff,
+        )
+        if period is None:
+            continue
+        for key in ((row["provider"], row["project_name"]), ("__all__", "__all__")):
+            buckets[key][period]["review_session_count"] += 1
+            buckets[key][period]["review_score"] += row["score"]
+
+    return buckets
+
+
+def _empty_effectiveness_periods() -> dict[str, dict]:
+    return {
+        "current": _empty_effectiveness_bucket(),
+        "previous": _empty_effectiveness_bucket(),
+    }
+
+
+def _empty_effectiveness_bucket() -> dict:
+    return {
+        "session_count": 0,
+        "total_cost": 0.0,
+        "total_active_seconds": 0,
+        "tool_call_count": 0,
+        "tool_error_count": 0,
+        "no_edit_session_count": 0,
+        "edit_call_count": 0,
+        "attributed_edit_call_count": 0,
+        "review_session_count": 0,
+        "review_score": 0,
+    }
+
+
+def _add_session_to_effectiveness_bucket(bucket: dict, row: dict) -> None:
+    edits = (row["file_edit_count"] or 0) + (row["file_write_count"] or 0)
+    bucket["session_count"] += 1
+    bucket["total_cost"] += row["estimated_cost_usd"] or 0.0
+    bucket["total_active_seconds"] += row["active_duration_seconds"] or 0
+    bucket["tool_call_count"] += row["tool_call_count"] or 0
+    bucket["tool_error_count"] += row["tool_error_count"] or 0
+    if (row["tool_call_count"] or 0) > 0 and edits == 0:
+        bucket["no_edit_session_count"] += 1
+
+
+def _add_edit_call_to_effectiveness_bucket(bucket: dict, row: dict) -> None:
+    bucket["edit_call_count"] += 1
+    if row["file_path"] is not None:
+        bucket["attributed_edit_call_count"] += 1
+
+
+def _effectiveness_bucket_result(bucket: dict) -> dict:
+    sessions = bucket["session_count"]
+    total_cost = bucket["total_cost"]
+    edit_calls = bucket["edit_call_count"]
+    attributed_edits = bucket["attributed_edit_call_count"]
+    tools = bucket["tool_call_count"]
+    return {
+        "session_count": sessions,
+        "total_cost": round(total_cost, 4),
+        "avg_cost_per_session": total_cost / sessions if sessions > 0 else 0.0,
+        "avg_active_seconds": (
+            bucket["total_active_seconds"] / sessions if sessions > 0 else 0.0
+        ),
+        "tool_call_count": tools,
+        "tool_error_count": bucket["tool_error_count"],
+        "error_rate": bucket["tool_error_count"] / tools if tools > 0 else 0.0,
+        "no_edit_session_count": bucket["no_edit_session_count"],
+        "no_edit_rate": (
+            bucket["no_edit_session_count"] / sessions if sessions > 0 else 0.0
+        ),
+        "edit_call_count": edit_calls,
+        "attributed_edit_call_count": attributed_edits,
+        "edit_attribution_rate": (
+            attributed_edits / edit_calls if edit_calls > 0 else 0.0
+        ),
+        "cost_per_edit": total_cost / attributed_edits if attributed_edits > 0 else 0.0,
+        "review_session_count": bucket["review_session_count"],
+        "review_rate": (
+            bucket["review_session_count"] / sessions if sessions > 0 else 0.0
+        ),
+        "review_score": bucket["review_score"],
+    }
+
+
+def _effectiveness_period(
+    started_at: str,
+    current_cutoff: datetime,
+    previous_cutoff: datetime,
+) -> str | None:
+    value = _parse_iso_datetime(started_at)
+    if value >= current_cutoff:
+        return "current"
+    if value >= previous_cutoff:
+        return "previous"
+    return None
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _ratio_delta(current: float, previous: float) -> float | None:
+    if previous == 0:
+        return None
+    return (current - previous) / previous
 
 
 def _investigation_flags(
@@ -2042,6 +2542,165 @@ def _investigation_flags(
         flags.append({"label": "weak attribution", "tone": "gray"})
 
     return flags, score
+
+
+def _normalize_investigation_flag_label(label: str) -> str:
+    if label.endswith(" permission friction"):
+        return "permission friction"
+    if label.endswith(" permission errors"):
+        return "permission errors"
+    if label.endswith(" file access errors"):
+        return "file access errors"
+    if label.endswith(" edit mismatches"):
+        return "edit mismatches"
+    if label.endswith(" edits missing paths"):
+        return "edits missing paths"
+    if label.endswith(" Other errors"):
+        return "Other errors"
+    if label.endswith(" total errors"):
+        return "high total errors"
+    return label
+
+
+def _investigation_row_matches_signal(row: dict, signal: str) -> bool:
+    for flag in row["flags"]:
+        label = _normalize_investigation_flag_label(flag["label"])
+        if _investigation_label_slug(label) == signal:
+            return True
+    for cause in row["causes"]:
+        if _investigation_label_slug(cause["label"]) == signal:
+            return True
+    return False
+
+
+def _investigation_action_labels() -> list[str]:
+    return [
+        "permission friction",
+        "missing prefix rules",
+        "permission errors",
+        "file access errors",
+        "edit mismatches",
+        "edits missing paths",
+        "Other errors",
+        "high total errors",
+        "no edits",
+        "expensive no-edit",
+        "zero active time",
+        "low active time",
+        "high cost/edit",
+        "weak attribution",
+        "verification command",
+        "broad search",
+        "mutation command",
+        "browser/system access",
+        "external service",
+        "cache/home access",
+        "other permission friction",
+    ]
+
+
+def _investigation_label_slug(label: str) -> str:
+    chars = []
+    previous_dash = False
+    for char in label.lower():
+        if char.isalnum():
+            chars.append(char)
+            previous_dash = False
+        elif not previous_dash:
+            chars.append("-")
+            previous_dash = True
+    return "".join(chars).strip("-")
+
+
+def _stronger_tone(current: str | None, new: str) -> str:
+    order = {"gray": 0, "amber": 1, "red": 2}
+    if current is None:
+        return new
+    return new if order.get(new, 0) > order.get(current, 0) else current
+
+
+def _investigation_action_for_label(label: str) -> str:
+    actions = {
+        "permission friction": (
+            "Review repeated approval prompts and add narrow reusable prefix rules "
+            "only for deterministic verification commands."
+        ),
+        "missing prefix rules": (
+            "Add prefix_rule guidance for repeated test, lint, or check commands; "
+            "keep broad mutation and external-service commands on request."
+        ),
+        "permission errors": (
+            "Check whether the session started in the intended repo root and whether "
+            "sandbox boundaries match the task."
+        ),
+        "file access errors": (
+            "Improve project attribution and path instructions so agents search from "
+            "the repo root before escalating."
+        ),
+        "edit mismatches": (
+            "Prefer smaller patches or reread target files immediately before edits."
+        ),
+        "edits missing paths": (
+            "Improve shell edit attribution by preferring structured edit tools or "
+            "repo-relative paths in mutation commands."
+        ),
+        "Other errors": (
+            "Inspect a sample of uncategorized failures and add a narrow parser category "
+            "when a repeat pattern is real."
+        ),
+        "high total errors": (
+            "Separate expected verification failures from setup or environment failures "
+            "before treating the session as productive iteration."
+        ),
+        "no edits": (
+            "Classify research-only sessions explicitly or tighten task prompts toward "
+            "a concrete code or documentation change."
+        ),
+        "expensive no-edit": (
+            "Review whether the task should have been split into a research brief before "
+            "implementation work."
+        ),
+        "zero active time": (
+            "Check provider timing data before using duration metrics for this session."
+        ),
+        "low active time": (
+            "Verify active-time detection for sessions with many tool calls in short work blocks."
+        ),
+        "high cost/edit": (
+            "Look for broad exploration before edits; turn repeat findings into project briefs "
+            "or durable artifacts."
+        ),
+        "weak attribution": (
+            "Start agents from the repo root and add project-specific instructions where logs "
+            "fall back to generic directories."
+        ),
+        "verification command": (
+            "Persist narrow approvals for repeated deterministic verification commands."
+        ),
+        "broad search": (
+            "Scope search commands to repo-relative paths before requesting broader access."
+        ),
+        "mutation command": (
+            "Keep broad mutation commands on-request unless they are wrapped by a project task."
+        ),
+        "browser/system access": (
+            "Use targeted browser or process checks and avoid broad system-control approvals."
+        ),
+        "external service": (
+            "Keep network and hosted-service commands explicit unless a workflow is proven safe."
+        ),
+        "cache/home access": (
+            "Prefer repo-local caches and avoid exposing home-directory paths unless needed."
+        ),
+        "other permission friction": (
+            "Inspect representative sessions and decide whether a new permission "
+            "category is needed."
+        ),
+    }
+    return actions.get(
+        label,
+        "Review representative sessions and decide whether to update project instructions.",
+    )
 
 
 def _weak_project_attribution(session: dict) -> bool:
