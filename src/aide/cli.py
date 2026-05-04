@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import shutil
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
 
 from aide.config import AideConfig, LogSource, load_config
 from aide.db import (
+    get_connection,
     get_ingested_file,
     get_summary_stats,
     ingest_sessions,
@@ -336,6 +337,58 @@ def jobs_status(skip_audit: bool):
             click.echo(f"  {kind}: {count} at {field_path}")
 
 
+@cli.group()
+def pipeline():
+    """Inspect aide pipeline health."""
+    pass
+
+
+@pipeline.command("status")
+@click.option(
+    "--skip-audit",
+    is_flag=True,
+    help="Skip the redacted-backup audit check.",
+)
+def pipeline_status(skip_audit: bool):
+    """Show ingest, snapshot, and backup pipeline health."""
+    config = load_config()
+    statuses = collect_launchd_job_statuses()
+    status_by_name = {status.name: status for status in statuses}
+    backup_root = config.db_path.parent / "redacted-logs"
+
+    checks = [
+        _pipeline_launchd_check(statuses),
+        _pipeline_ingest_check(config.db_path),
+        _pipeline_snapshot_check(config.db_path),
+        _pipeline_backup_check(status_by_name.get("redacted backup"), backup_root),
+    ]
+
+    if skip_audit:
+        checks.append(("redaction audit", "skipped", "not checked"))
+    elif not backup_root.exists():
+        checks.append(("redaction audit", "attention", f"missing {backup_root}"))
+    else:
+        audit = audit_redacted_path(backup_root)
+        state = "ok" if audit.finding_count == 0 else "attention"
+        checks.append((
+            "redaction audit",
+            state,
+            (
+                f"{audit.files_scanned} files, {audit.lines_scanned} lines, "
+                f"{audit.finding_count} findings"
+            ),
+        ))
+
+    overall = "ok" if all(item[1] in {"ok", "skipped"} for item in checks) else "attention"
+    click.echo(f"pipeline: {overall}")
+    for name, state, detail in checks:
+        click.echo(f"{name}: {state}")
+        click.echo(f"  {detail}")
+
+    if overall != "ok":
+        raise SystemExit(1)
+
+
 @cli.command()
 @click.option("--full", is_flag=True, help="Rebuild database from scratch (re-parse all files).")
 @click.option(
@@ -592,6 +645,123 @@ def _parse_snapshot_date(value: str | None, today: date | None = None) -> date |
         raise click.ClickException(
             "--date must use YYYY-MM-DD, today, or yesterday."
         ) from exc
+
+
+def _pipeline_launchd_check(statuses: list[object]) -> tuple[str, str, str]:
+    if not statuses:
+        return ("launchd jobs", "attention", "no launchd jobs found")
+
+    unhealthy = [status.name for status in statuses if not status.healthy]
+    if unhealthy:
+        return (
+            "launchd jobs",
+            "attention",
+            f"{len(unhealthy)} unhealthy: {', '.join(unhealthy)}",
+        )
+    return ("launchd jobs", "ok", f"{len(statuses)} jobs loaded and healthy")
+
+
+def _pipeline_ingest_check(db_path: Path) -> tuple[str, str, str]:
+    if not db_path.exists():
+        return ("ingest freshness", "attention", "database missing")
+
+    latest = _latest_ingest_at(db_path)
+    if latest is None:
+        return ("ingest freshness", "attention", "no ingest log rows")
+
+    age = _age(latest)
+    state = "ok" if age is not None and age <= timedelta(hours=26) else "attention"
+    return (
+        "ingest freshness",
+        state,
+        f"latest ingest {format_timestamp(latest)} ({_format_age(age)} old)",
+    )
+
+
+def _pipeline_snapshot_check(db_path: Path) -> tuple[str, str, str]:
+    if not db_path.exists():
+        return ("snapshot freshness", "attention", "database missing")
+
+    latest = _latest_snapshot_date(db_path)
+    if latest is None:
+        return ("snapshot freshness", "attention", "no effectiveness snapshots")
+
+    today = date.today()
+    state = "ok" if latest >= today - timedelta(days=1) else "attention"
+    return ("snapshot freshness", state, f"latest snapshot {latest.isoformat()}")
+
+
+def _pipeline_backup_check(
+    status: object | None,
+    backup_root: Path,
+) -> tuple[str, str, str]:
+    if status is None:
+        return ("redacted backup", "attention", "launchd job missing from status")
+    if not backup_root.exists():
+        return ("redacted backup", "attention", f"backup root missing: {backup_root}")
+
+    updated_at = getattr(status, "stdout_updated_at", None)
+    age = _age(updated_at)
+    state = (
+        "ok"
+        if getattr(status, "healthy", False)
+        and age is not None
+        and age <= timedelta(hours=26)
+        else "attention"
+    )
+    detail = f"stdout updated {format_timestamp(updated_at)} ({_format_age(age)} old)"
+    return ("redacted backup", state, detail)
+
+
+def _latest_ingest_at(db_path: Path) -> datetime | None:
+    con = get_connection(db_path)
+    try:
+        row = con.execute("SELECT MAX(ingested_at) AS value FROM ingest_log").fetchone()
+        return _parse_sqlite_datetime(row["value"] if row else None)
+    finally:
+        con.close()
+
+
+def _latest_snapshot_date(db_path: Path) -> date | None:
+    con = get_connection(db_path)
+    try:
+        row = con.execute(
+            """SELECT MAX(snapshot_date) AS value
+            FROM effectiveness_snapshots
+            WHERE scope = 'all'"""
+        ).fetchone()
+        return date.fromisoformat(row["value"]) if row and row["value"] else None
+    finally:
+        con.close()
+
+
+def _parse_sqlite_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    return parsed.astimezone() if parsed.tzinfo else parsed.astimezone()
+
+
+def _age(value: datetime | None) -> timedelta | None:
+    if value is None:
+        return None
+    return datetime.now().astimezone() - value.astimezone()
+
+
+def _format_age(value: timedelta | None) -> str:
+    if value is None:
+        return "unknown"
+    seconds = max(0, int(value.total_seconds()))
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    if hours >= 24:
+        days = hours // 24
+        rem_hours = hours % 24
+        return f"{days}d {rem_hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 def _yes_no(value: bool) -> str:

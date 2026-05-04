@@ -18,7 +18,8 @@ from aide.cli import (
     resolve_ingest_sources,
 )
 from aide.config import AideConfig, LogSource
-from aide.db import get_summary_stats, ingest_sessions, init_db
+from aide.db import get_summary_stats, ingest_sessions, init_db, log_ingestion
+from aide.effectiveness import snapshot_effectiveness
 from aide.jobs import LaunchdJobStatus
 from aide.models import ParsedMessage, ParsedSession, SemanticArtifact, ToolCall
 from aide.redaction import RedactionAuditResult
@@ -501,6 +502,84 @@ class TestJobsStatusCommand:
         assert "loaded: no" in result.output
         assert "launchctl: Could not find service" in result.output
         assert "redaction audit: skipped" in result.output
+
+
+class TestPipelineStatusCommand:
+    def test_pipeline_status_reports_fresh_pipeline(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        session = _action_session()
+        ingest_sessions(config.db_path, [session])
+        log_ingestion(
+            config.db_path,
+            session.source_file,
+            file_size=100,
+            file_mtime=session.started_at.timestamp(),
+            session_count=1,
+            provider=session.provider,
+        )
+        snapshot_effectiveness(config.db_path)
+        backup_root = config.db_path.parent / "redacted-logs"
+        backup_root.mkdir()
+        now = datetime.now().astimezone()
+        statuses = [
+            LaunchdJobStatus(
+                name="ingest",
+                label="com.brianliou.aide.ingest",
+                plist_path=tmp_path / "ingest.plist",
+                plist_exists=True,
+                loaded=True,
+                last_exit_code=0,
+            ),
+            LaunchdJobStatus(
+                name="effectiveness snapshot",
+                label="com.brianliou.aide.effectiveness-snapshot",
+                plist_path=tmp_path / "effectiveness-snapshot.plist",
+                plist_exists=True,
+                loaded=True,
+                last_exit_code=0,
+            ),
+            LaunchdJobStatus(
+                name="redacted backup",
+                label="com.brianliou.aide.backup-redacted",
+                plist_path=tmp_path / "backup-redacted.plist",
+                plist_exists=True,
+                loaded=True,
+                last_exit_code=0,
+                stdout_updated_at=now,
+            ),
+        ]
+
+        with (
+            patch("aide.cli.load_config", return_value=config),
+            patch("aide.cli.collect_launchd_job_statuses", return_value=statuses),
+        ):
+            result = CliRunner().invoke(cli, ["pipeline", "status", "--skip-audit"])
+
+        assert result.exit_code == 0
+        assert "pipeline: ok" in result.output
+        assert "launchd jobs: ok" in result.output
+        assert "ingest freshness: ok" in result.output
+        assert "snapshot freshness: ok" in result.output
+        assert "redacted backup: ok" in result.output
+        assert "redaction audit: skipped" in result.output
+
+    def test_pipeline_status_exits_nonzero_for_stale_pipeline(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with (
+            patch("aide.cli.load_config", return_value=config),
+            patch("aide.cli.collect_launchd_job_statuses", return_value=[]),
+        ):
+            result = CliRunner().invoke(cli, ["pipeline", "status", "--skip-audit"])
+
+        assert result.exit_code == 1
+        assert "pipeline: attention" in result.output
+        assert "launchd jobs: attention" in result.output
+        assert "ingest freshness: attention" in result.output
+        assert "snapshot freshness: attention" in result.output
+        assert "redacted backup: attention" in result.output
 
 
 class TestIngestCommand:
