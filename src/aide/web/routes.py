@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from flask import Blueprint, current_app, redirect, render_template, request
 
 from aide.artifacts import accept_artifact, reject_artifact
+from aide.brief import render_project_brief
 from aide.config import save_config_value
 from aide.runbook import render_project_runbook
 from aide.web import queries
@@ -235,6 +236,31 @@ def runbook():
         projects=projects,
         project_names=project_names,
         project=project,
+        markdown=markdown,
+        subscription_user=sub,
+    )
+
+
+@bp.route("/brief")
+def brief():
+    """Generated task brief preview for accepted artifacts."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    projects = queries.get_accepted_artifact_projects(db_path)
+    project_names = {item["project_name"] for item in projects}
+    project = request.args.get("project") or None
+    task = request.args.get("task") or ""
+    if project is None and projects:
+        project = projects[0]["project_name"]
+    markdown = ""
+    if project and task:
+        markdown = render_project_brief(db_path, project, task)
+    return render_template(
+        "brief.html",
+        projects=projects,
+        project_names=project_names,
+        project=project,
+        task=task,
         markdown=markdown,
         subscription_user=sub,
     )

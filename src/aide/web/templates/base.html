@@ -42,6 +42,10 @@
                        class="{% if request.path == '/runbook' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
                         Runbook
                     </a>
+                    <a href="/brief"
+                       class="{% if request.path == '/brief' %}text-blue-600 border-b-2 border-blue-600{% else %}text-gray-500 hover:text-gray-900{% endif %} pb-1">
+                        Brief
+                    </a>
                 </div>
                 <form action="/settings/subscription" method="post" class="flex items-center gap-2">
                     <span class="text-xs text-gray-400">API</span>

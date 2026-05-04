@@ -571,6 +571,34 @@ class TestRoutes:
         assert b"No accepted artifacts found for this project." in resp.data
         assert b"Use SQLite" not in resp.data
 
+    def test_brief_returns_200(self, artifact_client):
+        resp = artifact_client.get("/brief")
+        assert resp.status_code == 200
+
+    def test_brief_prompts_for_task_before_preview(self, artifact_client):
+        resp = artifact_client.get("/brief")
+
+        assert b"Enter a task to preview a brief." in resp.data
+        assert b"# alpha Brief" not in resp.data
+
+    def test_brief_renders_task_specific_preview(self, artifact_client):
+        resp = artifact_client.get("/brief?project=alpha&task=ship%20brief")
+
+        assert resp.status_code == 200
+        assert b"# alpha Brief" in resp.data
+        assert b"Task: ship brief" in resp.data
+        assert b"Use SQLite" in resp.data
+        assert b"Run full check" not in resp.data
+        assert b"Avoid raw log sharing" not in resp.data
+
+    def test_brief_renders_requested_project(self, artifact_client):
+        resp = artifact_client.get("/brief?project=beta&task=ship%20brief")
+
+        assert resp.status_code == 200
+        assert b"# beta Brief" in resp.data
+        assert b"No accepted artifacts found for this project." in resp.data
+        assert b"Use SQLite" not in resp.data
+
 
 # ===========================================================================
 # Navigation
@@ -582,7 +610,7 @@ class TestNavigation:
 
     @pytest.mark.parametrize(
         "path",
-        ["/", "/projects", "/sessions", "/tools", "/artifacts", "/runbook"],
+        ["/", "/projects", "/sessions", "/tools", "/artifacts", "/runbook", "/brief"],
     )
     def test_nav_links_present(self, client, path):
         resp = client.get(path)
@@ -592,6 +620,7 @@ class TestNavigation:
         assert b'href="/tools"' in resp.data
         assert b'href="/artifacts"' in resp.data
         assert b'href="/runbook"' in resp.data
+        assert b'href="/brief"' in resp.data
 
 
 # ===========================================================================
@@ -659,6 +688,11 @@ class TestEmptyDatabase:
 
     def test_runbook_empty(self, empty_client):
         resp = empty_client.get("/runbook")
+        assert resp.status_code == 200
+        assert b"No accepted artifacts found." in resp.data
+
+    def test_brief_empty(self, empty_client):
+        resp = empty_client.get("/brief")
         assert resp.status_code == 200
         assert b"No accepted artifacts found." in resp.data
 
