@@ -78,6 +78,10 @@ def effectiveness():
         overview=queries.get_effectiveness_overview(db_path, provider=provider),
         projects=queries.get_effectiveness_project_rollups(db_path, provider=provider),
         trends=queries.get_effectiveness_daily_trends(db_path, provider=provider),
+        snapshot_history=queries.get_effectiveness_snapshot_history(
+            db_path,
+            provider=provider,
+        ),
         investigation_actions=queries.get_investigation_action_summary(
             db_path,
             hours=30 * 24,
