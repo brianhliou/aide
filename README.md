@@ -58,7 +58,9 @@ aide ingest --full       # Rebuild database from scratch
 aide ingest --archive-raw  # Also copy raw logs locally (sensitive; off by default)
 aide backup-redacted     # Write redacted log backups for configured sources
 aide redact-audit --strict  # Check redacted backups for likely sensitive leftovers
-aide jobs status         # Check launchd ingest/backup health
+aide effectiveness snapshot  # Persist daily effectiveness trend metrics
+aide effectiveness history   # List persisted effectiveness snapshots
+aide jobs status         # Check launchd background job health
 aide serve               # Start dashboard at localhost:8787
 aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal

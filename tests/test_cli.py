@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -707,6 +708,59 @@ class TestActionsCommand:
         assert "Saved 1 artifact proposal" in result.output
         assert len(artifacts) == 1
         assert artifacts[0]["artifact_type"] == "planner_signal"
+
+
+class TestEffectivenessCommand:
+    def test_effectiveness_help_is_available(self):
+        result = CliRunner().invoke(cli, ["effectiveness", "--help"])
+
+        assert result.exit_code == 0
+        assert "snapshot" in result.output
+        assert "history" in result.output
+
+    def test_effectiveness_snapshot_persists_rows(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_action_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["effectiveness", "snapshot", "--date", "2026-05-04"],
+            )
+
+        assert result.exit_code == 0
+        assert "Stored 3 effectiveness snapshot row(s) for 2026-05-04 (30d)." in (
+            result.output
+        )
+        assert "Scopes: all=1, provider=1, project=1" in result.output
+
+        con = sqlite3.connect(config.db_path)
+        try:
+            count = con.execute(
+                "SELECT COUNT(*) FROM effectiveness_snapshots"
+            ).fetchone()[0]
+        finally:
+            con.close()
+
+        assert count == 3
+
+    def test_effectiveness_history_lists_recent_rows(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_action_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(
+                cli,
+                ["effectiveness", "snapshot", "--date", "2026-05-04"],
+            )
+            result = CliRunner().invoke(cli, ["effectiveness", "history"])
+
+        assert result.exit_code == 0
+        assert "2026-05-04 all all: 1 sessions" in result.output
+        assert "2026-05-04 provider codex: 1 sessions" in result.output
+        assert "2026-05-04 project codex/aide: 1 sessions" in result.output
 
 
 class TestArtifactsCommand:

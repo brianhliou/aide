@@ -139,6 +139,7 @@ def test_init_db_creates_tables(tmp_db):
         "semantic_artifacts",
         "artifact_evidence",
         "artifact_events",
+        "effectiveness_snapshots",
     }
     assert expected.issubset(tables)
 
