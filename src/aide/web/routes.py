@@ -82,6 +82,10 @@ def effectiveness():
             db_path,
             provider=provider,
         ),
+        snapshot_callouts=queries.get_effectiveness_snapshot_callouts(
+            db_path,
+            provider=provider,
+        ),
         investigation_actions=queries.get_investigation_action_summary(
             db_path,
             hours=30 * 24,
