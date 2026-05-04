@@ -15,14 +15,14 @@ from aide.cli import (
     ingest_source,
     resolve_ingest_sources,
 )
-from aide.config import AideConfig, LogSource
+from aide.config import AideConfig, LogSource, PublishingConfig
 from aide.db import get_summary_stats, ingest_sessions, init_db
 from aide.jobs import LaunchdJobStatus
 from aide.models import ParsedMessage, ParsedSession, SemanticArtifact, ToolCall
 from aide.redaction import RedactionAuditResult
 
 
-def _config(tmp_path, sources=None):
+def _config(tmp_path, sources=None, publishing=None):
     return AideConfig(
         subscription_user=False,
         log_dir=tmp_path / "claude-legacy",
@@ -31,6 +31,7 @@ def _config(tmp_path, sources=None):
         db_path=tmp_path / "aide.db",
         sources=sources if sources is not None else [],
         sources_configured=sources is not None,
+        publishing=publishing or PublishingConfig(),
     )
 
 
@@ -83,14 +84,21 @@ def _digest_session() -> ParsedSession:
     )
 
 
-def _semantic_artifact(project_name: str = "aide") -> SemanticArtifact:
-    now = datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
+def _semantic_artifact(
+    project_name: str = "aide",
+    *,
+    artifact_type: str = "verification_recipe",
+    title: str = "Run full check",
+    body: str = "Use just check before committing.",
+    first_seen_at: datetime | None = None,
+) -> SemanticArtifact:
+    now = first_seen_at or datetime(2025, 1, 15, 10, 0, 0, tzinfo=timezone.utc)
     return SemanticArtifact(
         project_name=project_name,
         project_path=f"/Users/test/projects/{project_name}",
-        artifact_type="verification_recipe",
-        title="Run full check",
-        body="Use just check before committing.",
+        artifact_type=artifact_type,
+        title=title,
+        body=body,
         confidence="high",
         source_provider="codex",
         source_session_id="digest-1",
@@ -848,3 +856,247 @@ class TestBriefCommand:
 
         assert result.exit_code != 0
         assert "No data yet. Run 'aide ingest' first." in result.output
+
+
+class TestPublishCommand:
+    def test_publish_help_is_available(self):
+        result = CliRunner().invoke(cli, ["publish", "--help"])
+
+        assert result.exit_code == 0
+        assert "log" in result.output
+
+    def test_publish_log_writes_configured_website_log(self, tmp_path):
+        website_path = tmp_path / "site"
+        config = _config(
+            tmp_path,
+            publishing=PublishingConfig(website_path=website_path),
+        )
+        init_db(config.db_path)
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                ["publish", "log", "--artifact", str(artifact_id)],
+            )
+
+        output_path = website_path / "_log" / "run-full-check.md"
+        assert result.exit_code == 0
+        assert f"Wrote log to {output_path}" in result.output
+        assert output_path.exists()
+        assert output_path.read_text().startswith("---\nlayout: page\n")
+
+    def test_publish_log_writes_project_batch(self, tmp_path):
+        website_path = tmp_path / "site"
+        config = _config(
+            tmp_path,
+            publishing=PublishingConfig(website_path=website_path),
+        )
+        init_db(config.db_path)
+        old_id = propose_artifact(
+            config.db_path,
+            _semantic_artifact(
+                title="Old check",
+                first_seen_at=datetime(2025, 1, 1, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        new_id = propose_artifact(
+            config.db_path,
+            _semantic_artifact(
+                title="New check",
+                first_seen_at=datetime(2025, 1, 15, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        other_project_id = propose_artifact(
+            config.db_path,
+            _semantic_artifact(project_name="other", title="Other project check"),
+        )
+
+        with patch("aide.cli.load_config", return_value=config):
+            for artifact_id in [old_id, new_id, other_project_id]:
+                CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "log",
+                    "--project",
+                    "aide",
+                    "--since",
+                    "2025-01-10",
+                ],
+            )
+
+        output_path = website_path / "_log" / "new-check.md"
+        assert result.exit_code == 0
+        assert "Wrote 1 log(s)" in result.output
+        assert f"- {output_path}" in result.output
+        assert output_path.exists()
+        assert not (website_path / "_log" / "old-check.md").exists()
+        assert not (website_path / "_log" / "other-project-check.md").exists()
+
+    def test_publish_log_rejects_artifact_and_project_together(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["publish", "log", "--artifact", "1", "--project", "aide"],
+            )
+
+        assert result.exit_code != 0
+        assert "Pass --artifact or --project, not both." in result.output
+
+    def test_publish_log_requires_artifact_or_project(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(cli, ["publish", "log", "--out", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "Pass --artifact or --project." in result.output
+
+    def test_publish_log_writes_explicit_output(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+        output_path = tmp_path / "log.md"
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "log",
+                    "--artifact",
+                    str(artifact_id),
+                    "--out",
+                    str(output_path),
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert output_path.exists()
+        assert "Run full check" in output_path.read_text()
+
+    def test_publish_log_requires_accepted_artifact(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "log",
+                    "--artifact",
+                    str(artifact_id),
+                    "--out",
+                    str(tmp_path / "log.md"),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "only accepted artifacts can be published" in result.output
+
+    def test_publish_log_requires_website_or_out(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                ["publish", "log", "--artifact", str(artifact_id)],
+            )
+
+        assert result.exit_code != 0
+        assert "No publishing.website_path configured" in result.output
+
+    def test_publish_post_draft_writes_configured_draft(self, tmp_path):
+        website_path = tmp_path / "site"
+        config = _config(
+            tmp_path,
+            publishing=PublishingConfig(website_path=website_path),
+        )
+        init_db(config.db_path)
+        artifact_id = propose_artifact(
+            config.db_path,
+            _semantic_artifact(
+                artifact_type="decision",
+                title="Publish logs from accepted artifacts",
+            ),
+        )
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "post-draft",
+                    "--project",
+                    "aide",
+                    "--topic",
+                    "Automated logs and posts",
+                ],
+            )
+
+        output_path = website_path / "_drafts" / "automated-logs-and-posts.md"
+        assert result.exit_code == 0
+        assert f"Wrote post draft to {output_path}" in result.output
+        assert output_path.exists()
+        assert "## Working Thesis" in output_path.read_text()
+        assert "Publish logs from accepted artifacts" in output_path.read_text()
+
+    def test_publish_post_draft_writes_explicit_output(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        artifact_id = propose_artifact(config.db_path, _semantic_artifact())
+        output_path = tmp_path / "draft.md"
+
+        with patch("aide.cli.load_config", return_value=config):
+            CliRunner().invoke(cli, ["artifacts", "accept", str(artifact_id)])
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "post-draft",
+                    "--project",
+                    "aide",
+                    "--topic",
+                    "Verification habits",
+                    "--out",
+                    str(output_path),
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert output_path.exists()
+        assert "Verification habits" in output_path.read_text()
+
+    def test_publish_post_draft_requires_website_or_out(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "publish",
+                    "post-draft",
+                    "--project",
+                    "aide",
+                    "--topic",
+                    "Verification habits",
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "No publishing.website_path configured" in result.output

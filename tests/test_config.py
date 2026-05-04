@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from aide.config import DEFAULTS, AideConfig, LogSource, load_config
+from aide.config import DEFAULTS, AideConfig, LogSource, PublishingConfig, load_config
 
 
 def test_load_config_no_file(tmp_path):
@@ -15,6 +15,7 @@ def test_load_config_no_file(tmp_path):
     assert config.port == 8787
     assert config.sources == [LogSource(provider="claude", path=config.log_dir)]
     assert config.sources_configured is False
+    assert config.publishing == PublishingConfig()
 
 
 def test_load_config_defaults_paths(tmp_path):
@@ -134,4 +135,30 @@ def test_load_config_rejects_malformed_sources(tmp_path):
     config_file.write_text("sources: nope\n")
 
     with pytest.raises(ValueError, match="sources must be a list"):
+        load_config(config_path=config_file)
+
+
+def test_load_config_publishing(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "publishing:\n"
+        "  website_path: ~/projects/brianhliou.github.io\n"
+        "  log_dir: _log\n"
+        "  draft_dir: _drafts\n"
+    )
+
+    config = load_config(config_path=config_file)
+
+    assert config.publishing == PublishingConfig(
+        website_path=Path("~/projects/brianhliou.github.io").expanduser(),
+        log_dir="_log",
+        draft_dir="_drafts",
+    )
+
+
+def test_load_config_rejects_malformed_publishing(tmp_path):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("publishing: nope\n")
+
+    with pytest.raises(ValueError, match="publishing must be a mapping"):
         load_config(config_path=config_file)

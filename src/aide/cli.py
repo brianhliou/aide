@@ -838,3 +838,188 @@ def brief(project_name: str, task: str, output_path: Path | None):
 
     write_project_brief(db_path, project_name, task, output_path)
     click.echo(f"Wrote brief to {output_path}")
+
+
+@cli.group()
+def publish():
+    """Export reviewed artifacts into publishable Markdown."""
+    pass
+
+
+@publish.command("log")
+@click.option(
+    "--artifact",
+    "artifact_id",
+    default=None,
+    type=int,
+    help="Accepted artifact id to export as a log entry.",
+)
+@click.option(
+    "--project",
+    "project_name",
+    default=None,
+    help="Accepted artifact project to export as log entries.",
+)
+@click.option(
+    "--since",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Only export project artifacts first seen on or after YYYY-MM-DD.",
+)
+@click.option(
+    "--out",
+    "output_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Write one artifact to this file, or project logs to this directory, "
+        "instead of the configured website log dir."
+    ),
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Overwrite an existing output file.",
+)
+def publish_log(
+    artifact_id: int | None,
+    project_name: str | None,
+    since,
+    output_path: Path | None,
+    overwrite: bool,
+):
+    """Export accepted artifacts as website log entries."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.publication import (
+        log_filename_for_artifact,
+        write_log_from_artifact,
+        write_logs_for_project,
+    )
+
+    try:
+        if artifact_id is not None and project_name is not None:
+            raise click.ClickException("Pass --artifact or --project, not both.")
+        if artifact_id is None and project_name is None:
+            raise click.ClickException("Pass --artifact or --project.")
+
+        if artifact_id is not None:
+            if since is not None:
+                raise click.ClickException("--since only applies with --project.")
+            if output_path is None:
+                log_dir = _publishing_log_dir(config)
+                output_path = log_dir / log_filename_for_artifact(db_path, artifact_id)
+
+            write_log_from_artifact(
+                db_path,
+                artifact_id,
+                output_path,
+                overwrite=overwrite,
+            )
+            click.echo(f"Wrote log to {output_path}")
+            return
+
+        output_dir = output_path or _publishing_log_dir(config)
+        output_paths = write_logs_for_project(
+            db_path,
+            project_name,
+            output_dir,
+            since=since.date() if since is not None else None,
+            overwrite=overwrite,
+        )
+
+        if not output_paths:
+            click.echo("No publishable accepted artifacts found.")
+            return
+        click.echo(f"Wrote {len(output_paths)} log(s) to {output_dir}")
+        for path in output_paths:
+            click.echo(f"- {path}")
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _publishing_log_dir(config: AideConfig) -> Path:
+    website_path = config.publishing.website_path
+    if website_path is None:
+        raise click.ClickException(
+            "No publishing.website_path configured. Set it in config.yaml or pass --out."
+        )
+    return website_path / config.publishing.log_dir
+
+
+@publish.command("post-draft")
+@click.option(
+    "--project",
+    "project_name",
+    required=True,
+    help="Accepted artifact project to use as draft source material.",
+)
+@click.option(
+    "--topic",
+    required=True,
+    help="Topic or working title for the post draft.",
+)
+@click.option(
+    "--since",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Only include project artifacts first seen on or after YYYY-MM-DD.",
+)
+@click.option(
+    "--out",
+    "output_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write Markdown to this file instead of the configured website draft dir.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Overwrite an existing output file.",
+)
+def publish_post_draft(
+    project_name: str,
+    topic: str,
+    since,
+    output_path: Path | None,
+    overwrite: bool,
+):
+    """Export accepted artifacts as a human-review post draft."""
+    config = load_config()
+    db_path = config.db_path
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.publication import post_draft_filename, write_post_draft
+
+    try:
+        if output_path is None:
+            output_path = _publishing_draft_dir(config) / post_draft_filename(topic)
+        write_post_draft(
+            db_path,
+            project_name,
+            topic,
+            output_path,
+            since=since.date() if since is not None else None,
+            overwrite=overwrite,
+        )
+    except FileExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Wrote post draft to {output_path}")
+
+
+def _publishing_draft_dir(config: AideConfig) -> Path:
+    website_path = config.publishing.website_path
+    if website_path is None:
+        raise click.ClickException(
+            "No publishing.website_path configured. Set it in config.yaml or pass --out."
+        )
+    return website_path / config.publishing.draft_dir

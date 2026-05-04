@@ -27,6 +27,13 @@ class LogSource:
     path: Path
 
 
+@dataclass(frozen=True)
+class PublishingConfig:
+    website_path: Path | None = None
+    log_dir: str = "_log"
+    draft_dir: str = "_drafts"
+
+
 @dataclass
 class AideConfig:
     subscription_user: bool
@@ -36,6 +43,7 @@ class AideConfig:
     codex_log_dir: Path = Path("~/.codex/sessions").expanduser()
     sources: list[LogSource] = field(default_factory=list)
     sources_configured: bool = False
+    publishing: PublishingConfig = field(default_factory=PublishingConfig)
 
 
 def save_config_value(key: str, value: object, config_path: Path | None = None) -> None:
@@ -70,6 +78,7 @@ def load_config(config_path: Path | None = None) -> AideConfig:
 
     merged = dict(DEFAULTS)
     configured_sources: list[LogSource] | None = None
+    publishing = PublishingConfig()
 
     if config_path.is_file():
         with open(config_path) as f:
@@ -79,6 +88,7 @@ def load_config(config_path: Path | None = None) -> AideConfig:
                 if key in user_config:
                     merged[key] = user_config[key]
             configured_sources = _parse_sources(user_config.get("sources"))
+            publishing = _parse_publishing(user_config.get("publishing"))
 
     log_dir = Path(merged["log_dir"]).expanduser()
     codex_log_dir = Path(merged["codex_log_dir"]).expanduser()
@@ -95,6 +105,7 @@ def load_config(config_path: Path | None = None) -> AideConfig:
         db_path=db_path,
         sources=sources,
         sources_configured=configured_sources is not None,
+        publishing=publishing,
     )
 
 
@@ -117,3 +128,27 @@ def _parse_sources(value: Any) -> list[LogSource] | None:
         sources.append(LogSource(provider=provider, path=Path(path).expanduser()))
 
     return sources
+
+
+def _parse_publishing(value: Any) -> PublishingConfig:
+    if value is None:
+        return PublishingConfig()
+    if not isinstance(value, dict):
+        raise ValueError("publishing must be a mapping")
+
+    website_path = value.get("website_path")
+    log_dir = value.get("log_dir", "_log")
+    draft_dir = value.get("draft_dir", "_drafts")
+
+    if website_path is not None and not isinstance(website_path, str):
+        raise ValueError("publishing.website_path must be a string")
+    if not isinstance(log_dir, str) or not log_dir:
+        raise ValueError("publishing.log_dir must be a non-empty string")
+    if not isinstance(draft_dir, str) or not draft_dir:
+        raise ValueError("publishing.draft_dir must be a non-empty string")
+
+    return PublishingConfig(
+        website_path=Path(website_path).expanduser() if website_path else None,
+        log_dir=log_dir,
+        draft_dir=draft_dir,
+    )

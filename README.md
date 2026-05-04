@@ -67,6 +67,9 @@ aide artifacts accept <artifact-id>
 aide artifacts reject <artifact-id>
 aide runbook generate --project <name>
 aide brief --project <name> --task "<task>"
+aide publish log --artifact <artifact-id>
+aide publish log --project <name> --since YYYY-MM-DD
+aide publish post-draft --project <name> --topic "<topic>"
 ```
 
 ## Configuration
@@ -85,6 +88,12 @@ sources:
     path: ~/.claude/projects
   - provider: codex
     path: ~/.codex/sessions
+
+# Optional: export reviewed artifacts into a static website.
+publishing:
+  website_path: ~/projects/brianhliou.github.io
+  log_dir: _log
+  draft_dir: _drafts
 ```
 
 ## Data Privacy
