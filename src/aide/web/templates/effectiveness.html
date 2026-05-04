@@ -136,6 +136,16 @@
         {% endfor %}
     </div>
 </div>
+{% elif snapshot_history|length < 2 %}
+<div class="bg-white rounded-lg shadow p-4 mb-6">
+    <div class="flex items-start justify-between gap-4">
+        <div>
+            <h2 class="text-lg font-semibold">Snapshot Callouts</h2>
+            <p class="mt-1 text-sm text-gray-600">Callouts need two snapshot dates. Backfill a baseline with <code class="px-1 py-0.5 rounded bg-gray-100 text-gray-800">aide effectiveness snapshot --date yesterday</code>.</p>
+        </div>
+        <span class="text-xs text-gray-500">{{ snapshot_history|length }} snapshots</span>
+    </div>
+</div>
 {% endif %}
 
 <div class="bg-white rounded-lg shadow p-4 mb-6">

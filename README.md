@@ -59,6 +59,7 @@ aide ingest --archive-raw  # Also copy raw logs locally (sensitive; off by defau
 aide backup-redacted     # Write redacted log backups for configured sources
 aide redact-audit --strict  # Check redacted backups for likely sensitive leftovers
 aide effectiveness snapshot  # Persist daily effectiveness trend metrics
+aide effectiveness snapshot --date yesterday  # Backfill a baseline snapshot
 aide effectiveness history   # List persisted effectiveness snapshots
 aide jobs status         # Check launchd background job health
 aide serve               # Start dashboard at localhost:8787

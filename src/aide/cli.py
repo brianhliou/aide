@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import date, timedelta
 from pathlib import Path
 
 import click
@@ -485,7 +486,7 @@ def effectiveness():
     "--date",
     "snapshot_date",
     default=None,
-    help="Snapshot date in YYYY-MM-DD format. Default: today.",
+    help="Snapshot date as YYYY-MM-DD, today, or yesterday. Default: today.",
 )
 @click.option(
     "--window-days",
@@ -503,16 +504,9 @@ def effectiveness_snapshot(snapshot_date: str | None, window_days: int):
         click.echo("No data yet. Run 'aide ingest' first.", err=True)
         raise SystemExit(1)
 
-    from datetime import date
-
     from aide.effectiveness import snapshot_effectiveness
 
-    day = None
-    if snapshot_date is not None:
-        try:
-            day = date.fromisoformat(snapshot_date)
-        except ValueError as exc:
-            raise click.ClickException("--date must use YYYY-MM-DD.") from exc
+    day = _parse_snapshot_date(snapshot_date)
 
     rows = snapshot_effectiveness(db_path, snapshot_date=day, window_days=window_days)
     scopes = _count_by_scope(rows)
@@ -578,6 +572,26 @@ def _count_by_scope(rows: list[object]) -> dict[str, int]:
         scope = getattr(row, "scope")
         counts[scope] = counts.get(scope, 0) + 1
     return counts
+
+
+def _parse_snapshot_date(value: str | None, today: date | None = None) -> date | None:
+    """Parse snapshot CLI date values."""
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    base = today or date.today()
+    if normalized == "today":
+        return base
+    if normalized == "yesterday":
+        return base - timedelta(days=1)
+
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise click.ClickException(
+            "--date must use YYYY-MM-DD, today, or yesterday."
+        ) from exc
 
 
 def _yes_no(value: bool) -> str:

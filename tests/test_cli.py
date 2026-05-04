@@ -3,13 +3,14 @@
 import json
 import shutil
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from aide.artifacts import get_artifact, list_artifacts, propose_artifact
 from aide.cli import (
+    _parse_snapshot_date,
     archive_jsonl,
     backup_redacted_sources,
     cli,
@@ -744,6 +745,28 @@ class TestEffectivenessCommand:
             con.close()
 
         assert count == 3
+
+    def test_effectiveness_snapshot_accepts_relative_date(self, tmp_path):
+        config = _config(tmp_path)
+        init_db(config.db_path)
+        ingest_sessions(config.db_path, [_action_session()])
+
+        with patch("aide.cli.load_config", return_value=config):
+            result = CliRunner().invoke(
+                cli,
+                ["effectiveness", "snapshot", "--date", "yesterday"],
+            )
+
+        expected_date = (date.today() - timedelta(days=1)).isoformat()
+        assert result.exit_code == 0
+        assert f"for {expected_date} (30d)." in result.output
+
+    def test_parse_snapshot_date_keywords(self):
+        today = date(2026, 5, 4)
+
+        assert _parse_snapshot_date("today", today=today) == today
+        assert _parse_snapshot_date("yesterday", today=today) == date(2026, 5, 3)
+        assert _parse_snapshot_date("2026-05-02", today=today) == date(2026, 5, 2)
 
     def test_effectiveness_history_lists_recent_rows(self, tmp_path):
         config = _config(tmp_path)
