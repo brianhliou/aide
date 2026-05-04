@@ -23,7 +23,7 @@ from aide.redaction import SUPPORTED_PROVIDERS, audit_redacted_path, redact_path
 
 @click.group()
 def cli():
-    """aide — AI Developer Effectiveness dashboard."""
+    """aide — local AI developer-effectiveness tooling."""
     pass
 
 

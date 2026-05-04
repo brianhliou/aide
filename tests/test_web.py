@@ -94,6 +94,37 @@ def _make_test_session(
     )
 
 
+def _make_no_edit_session(
+    session_id="no-edit-1",
+    project_name="beta",
+    provider="claude",
+    cost=4.0,
+    days_ago=0,
+):
+    """Build a session with enough tool calls to enter the review queue."""
+    session = _make_test_session(
+        session_id=session_id,
+        project_name=project_name,
+        provider=provider,
+        cost=cost,
+        days_ago=days_ago,
+    )
+    calls = [
+        ToolCall(
+            tool_name="Read",
+            file_path=f"src/file_{i}.py",
+            timestamp=session.started_at,
+        )
+        for i in range(20)
+    ]
+    session.messages[0].tool_calls = calls
+    session.tool_call_count = len(calls)
+    session.file_read_count = len(calls)
+    session.file_edit_count = 0
+    session.file_write_count = 0
+    return session
+
+
 def _seed_db(db_path):
     """Seed db_path with two test sessions in two projects and rebuild daily stats."""
     init_db(db_path)
@@ -223,6 +254,47 @@ def mixed_provider_db(tmp_path):
 def mixed_provider_client(mixed_provider_db):
     """Flask test client backed by mixed-provider data."""
     config = _make_config(mixed_provider_db)
+    app = create_app(config)
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        yield c
+
+
+@pytest.fixture
+def effectiveness_db(tmp_path):
+    """A temporary database with current and previous effectiveness signals."""
+    db_path = tmp_path / "test-aide-effectiveness.db"
+    init_db(db_path)
+    current_good = _make_test_session(
+        session_id="eff-alpha-current",
+        project_name="alpha",
+        provider="claude",
+        cost=2.0,
+        days_ago=1,
+    )
+    current_flagged = _make_no_edit_session(
+        session_id="eff-beta-flagged",
+        project_name="beta",
+        provider="codex",
+        cost=4.0,
+        days_ago=2,
+    )
+    previous = _make_test_session(
+        session_id="eff-alpha-previous",
+        project_name="alpha",
+        provider="claude",
+        cost=8.0,
+        days_ago=40,
+    )
+    ingest_sessions(db_path, [current_good, current_flagged, previous])
+    rebuild_daily_stats(db_path)
+    return db_path
+
+
+@pytest.fixture
+def effectiveness_client(effectiveness_db):
+    """Flask test client backed by effectiveness data."""
+    config = _make_config(effectiveness_db)
     app = create_app(config)
     app.config["TESTING"] = True
     with app.test_client() as c:
@@ -415,6 +487,26 @@ class TestRoutes:
         assert b"beta" in resp.data
         assert b"alpha" not in resp.data
         assert b"Provider" in resp.data
+
+    def test_effectiveness_returns_200(self, effectiveness_client):
+        resp = effectiveness_client.get("/effectiveness")
+        assert resp.status_code == 200
+
+    def test_effectiveness_contains_project_signals(self, effectiveness_client):
+        resp = effectiveness_client.get("/effectiveness")
+        assert b"Effectiveness Trend" in resp.data
+        assert b"Review Rate" in resp.data
+        assert b"Edit Attribution" in resp.data
+        assert b"Review Queue" in resp.data
+        assert b"alpha" in resp.data
+        assert b"beta" in resp.data
+
+    def test_effectiveness_provider_filter(self, effectiveness_client):
+        resp = effectiveness_client.get("/effectiveness?provider=codex")
+        assert resp.status_code == 200
+        assert b"Codex" in resp.data
+        assert b"beta" in resp.data
+        assert b"alpha" not in resp.data
 
     def test_sessions_returns_200(self, client):
         resp = client.get("/sessions")
@@ -610,12 +702,22 @@ class TestNavigation:
 
     @pytest.mark.parametrize(
         "path",
-        ["/", "/projects", "/sessions", "/tools", "/artifacts", "/runbook", "/brief"],
+        [
+            "/",
+            "/projects",
+            "/effectiveness",
+            "/sessions",
+            "/tools",
+            "/artifacts",
+            "/runbook",
+            "/brief",
+        ],
     )
     def test_nav_links_present(self, client, path):
         resp = client.get(path)
         assert b'href="/"' in resp.data
         assert b'href="/projects"' in resp.data
+        assert b'href="/effectiveness"' in resp.data
         assert b'href="/sessions"' in resp.data
         assert b'href="/tools"' in resp.data
         assert b'href="/artifacts"' in resp.data
@@ -671,6 +773,11 @@ class TestEmptyDatabase:
         resp = empty_client.get("/projects")
         assert resp.status_code == 200
 
+    def test_effectiveness_empty(self, empty_client):
+        resp = empty_client.get("/effectiveness")
+        assert resp.status_code == 200
+        assert b"No sessions in this window" in resp.data
+
     def test_sessions_empty(self, empty_client):
         resp = empty_client.get("/sessions")
         assert resp.status_code == 200
@@ -711,6 +818,15 @@ class TestSubscriptionUser:
         resp = sub_client.get("/projects")
         assert b"Total Cost" not in resp.data
         assert b"Avg Cost/Session" not in resp.data
+
+    def test_effectiveness_hides_cost(self, seeded_db):
+        config = _make_config(seeded_db, subscription_user=True)
+        app = create_app(config)
+        app.config["TESTING"] = True
+        with app.test_client() as c:
+            resp = c.get("/effectiveness")
+        assert b"Avg Cost / Session" not in resp.data
+        assert b"Avg Cost" not in resp.data
 
     def test_sessions_hides_cost_column(self, sub_client):
         resp = sub_client.get("/sessions")
@@ -1264,6 +1380,54 @@ class TestQueryEffectivenessTrends:
     def test_empty_db_returns_empty_list(self, empty_db):
         result = queries.get_effectiveness_trends(empty_db)
         assert result == []
+
+
+class TestQueryEffectivenessOverviewPage:
+    """Tests for effectiveness page query helpers."""
+
+    def test_overview_has_current_and_previous_windows(self, effectiveness_db):
+        result = queries.get_effectiveness_overview(effectiveness_db)
+
+        assert result["window_days"] == 30
+        assert result["current"]["session_count"] == 2
+        assert result["previous"]["session_count"] == 1
+        assert result["current"]["review_session_count"] == 1
+        assert result["current"]["review_rate"] == 0.5
+
+    def test_project_rollups_include_review_and_attribution(self, effectiveness_db):
+        result = queries.get_effectiveness_project_rollups(effectiveness_db)
+        by_project = {row["project_name"]: row for row in result}
+
+        assert by_project["alpha"]["current"]["session_count"] == 1
+        assert by_project["alpha"]["current"]["edit_attribution_rate"] == 1.0
+        assert by_project["beta"]["provider"] == "codex"
+        assert by_project["beta"]["current"]["review_session_count"] == 1
+        assert by_project["beta"]["current"]["no_edit_session_count"] == 1
+
+    def test_project_rollups_filter_by_provider(self, effectiveness_db):
+        result = queries.get_effectiveness_project_rollups(
+            effectiveness_db,
+            provider="codex",
+        )
+
+        assert [row["project_name"] for row in result] == ["beta"]
+
+    def test_daily_trends_include_rate_fields(self, effectiveness_db):
+        result = queries.get_effectiveness_daily_trends(effectiveness_db, days=30)
+
+        assert result
+        item = result[0]
+        assert "review_rate" in item
+        assert "error_rate" in item
+        assert "edit_attribution_rate" in item
+        assert "avg_cost_per_session" in item
+
+    def test_empty_db_returns_empty_effectiveness_rows(self, empty_db):
+        overview = queries.get_effectiveness_overview(empty_db)
+
+        assert overview["current"]["session_count"] == 0
+        assert queries.get_effectiveness_project_rollups(empty_db) == []
+        assert queries.get_effectiveness_daily_trends(empty_db) == []
 
 
 class TestQueryToolCounts:

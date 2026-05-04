@@ -66,6 +66,28 @@ def projects():
     )
 
 
+@bp.route("/effectiveness")
+def effectiveness():
+    """Effectiveness page with project-level improvement signals."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    provider = _provider_filter()
+    return render_template(
+        "effectiveness.html",
+        overview=queries.get_effectiveness_overview(db_path, provider=provider),
+        projects=queries.get_effectiveness_project_rollups(db_path, provider=provider),
+        trends=queries.get_effectiveness_daily_trends(db_path, provider=provider),
+        investigation_queue=queries.get_investigation_queue(
+            db_path,
+            hours=30 * 24,
+            provider=provider,
+            limit=6,
+        ),
+        provider_filter=provider,
+        subscription_user=sub,
+    )
+
+
 @bp.route("/sessions")
 def sessions():
     """Sessions list, optionally filtered by project."""

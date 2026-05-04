@@ -1,8 +1,10 @@
 # aide
 
-> AI Developer Effectiveness tool. Track your AI coding productivity across all projects.
+> Local AI developer-effectiveness for Claude Code, Codex, and the projects they touch.
 
-aide ingests your Claude Code and Codex session logs and tells you what's happening: cost trends, token usage, session patterns, efficiency metrics, and actionable recommendations for improving your agent instructions. The "Fitbit for AI coding."
+aide turns local AI coding session logs into a practical feedback loop: ingest sessions, understand cost and token behavior, diagnose where work went sideways, and preserve useful project knowledge as reviewable artifacts, runbooks, and start-session briefs.
+
+The product stays local-first and zero-LLM-call by default. Claude Code and Codex are the first supported providers, normalized into one SQLite database and one dashboard instead of separate tool silos.
 
 ## Why
 
@@ -20,8 +22,8 @@ The [METR study](https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-d
 
 ```bash
 pip install aide-dashboard    # or: git clone + uv sync
-aide ingest                   # Parse your Claude Code logs into SQLite
-aide ingest --provider codex  # Parse your Codex logs into SQLite
+aide ingest                   # Parse configured local AI coding logs
+aide ingest --provider codex  # Parse only Codex logs
 aide serve                    # Open the dashboard at localhost:8787
 aide autopsy <session-id>     # Diagnose a specific session
 ```
@@ -29,15 +31,16 @@ aide autopsy <session-id>     # Diagnose a specific session
 ## What You Get
 
 ```
-~/.claude/projects/**/*.jsonl → parser → SQLite → aide
-~/.codex/sessions/**/*.jsonl  → Codex parser → SQLite → aide
+~/.claude/projects/**/*.jsonl → Claude parser → SQLite → aide
+~/.codex/sessions/**/*.jsonl  → Codex parser  → SQLite → aide
 ```
 
-aide reads local AI coding session logs (JSONL), parses them into a SQLite database, and provides multiple ways to analyze them:
+aide reads local AI coding session logs (JSONL), parses them into a SQLite database, and provides multiple ways to analyze and reuse what happened:
 
 - **Dashboard** (`aide serve`) — Web UI showing cost trends, session browser, project comparisons, and tool usage patterns across all your sessions
 - **Data freshness** — Overview panel showing Claude/Codex session counts, latest session timestamps, tracked file counts, and last ingest timestamps
-- **Session diagnostics** (`aide autopsy <id>`) — Per-session Markdown report with cost breakdown by category, context window analysis, compaction detection, and CLAUDE.md improvement suggestions
+- **Effectiveness overview** — Project/provider rollups for cost per session, active time, review queue rate, edit attribution, and error trends
+- **Session diagnostics** (`aide autopsy <id>`) — Per-session Markdown report with cost breakdown by category, context-window analysis, compaction detection, and project-instruction improvement suggestions
 - **Investigation queue** — Dashboard view that flags sessions with weak attribution, high friction, file-access failures, no-edit expensive work, and other review signals
 - **Semantic artifacts** — Reviewable project knowledge proposed from sessions and accepted before becoming durable context
 - **Runbooks and briefs** — Markdown generated from accepted artifacts for future human or agent sessions
@@ -48,7 +51,7 @@ Zero LLM calls. Zero cost to run. All data stays local.
 ## Commands
 
 ```bash
-aide ingest              # Parse configured sources (legacy config: Claude only)
+aide ingest              # Parse configured sources
 aide ingest --provider claude
 aide ingest --provider codex
 aide ingest --full       # Rebuild database from scratch

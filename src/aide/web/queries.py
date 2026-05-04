@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 import shlex
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from pathlib import Path as _Path
@@ -1951,6 +1951,347 @@ def get_investigation_queue(
         return rows[:limit]
     finally:
         con.close()
+
+
+def get_effectiveness_overview(
+    db_path: Path,
+    days: int = 30,
+    provider: str | None = None,
+) -> dict:
+    """Current-vs-previous effectiveness summary for the effectiveness page."""
+    buckets = _collect_effectiveness_periods(db_path, days=days, provider=provider)
+    current = _effectiveness_bucket_result(buckets[("__all__", "__all__")]["current"])
+    previous = _effectiveness_bucket_result(buckets[("__all__", "__all__")]["previous"])
+    return {
+        "window_days": days,
+        "current": current,
+        "previous": previous,
+        "deltas": {
+            "avg_cost_per_session": _ratio_delta(
+                current["avg_cost_per_session"],
+                previous["avg_cost_per_session"],
+            ),
+            "avg_active_seconds": _ratio_delta(
+                current["avg_active_seconds"],
+                previous["avg_active_seconds"],
+            ),
+            "review_rate": current["review_rate"] - previous["review_rate"],
+            "edit_attribution_rate": (
+                current["edit_attribution_rate"] - previous["edit_attribution_rate"]
+            ),
+            "error_rate": current["error_rate"] - previous["error_rate"],
+        },
+    }
+
+
+def get_effectiveness_project_rollups(
+    db_path: Path,
+    days: int = 30,
+    provider: str | None = None,
+) -> list[dict]:
+    """Project/provider effectiveness rows with previous-window comparison."""
+    buckets = _collect_effectiveness_periods(db_path, days=days, provider=provider)
+    rows = []
+    for key, periods in buckets.items():
+        if key == ("__all__", "__all__"):
+            continue
+        current = _effectiveness_bucket_result(periods["current"])
+        if current["session_count"] == 0:
+            continue
+        previous = _effectiveness_bucket_result(periods["previous"])
+        rows.append({
+            "provider": key[0],
+            "project_name": key[1],
+            "current": current,
+            "previous": previous,
+            "deltas": {
+                "avg_cost_per_session": _ratio_delta(
+                    current["avg_cost_per_session"],
+                    previous["avg_cost_per_session"],
+                ),
+                "avg_active_seconds": _ratio_delta(
+                    current["avg_active_seconds"],
+                    previous["avg_active_seconds"],
+                ),
+                "review_rate": current["review_rate"] - previous["review_rate"],
+                "edit_attribution_rate": (
+                    current["edit_attribution_rate"]
+                    - previous["edit_attribution_rate"]
+                ),
+                "error_rate": current["error_rate"] - previous["error_rate"],
+            },
+        })
+
+    rows.sort(
+        key=lambda row: (
+            row["current"]["review_rate"],
+            row["current"]["error_rate"],
+            row["current"]["avg_cost_per_session"],
+            row["current"]["session_count"],
+        ),
+        reverse=True,
+    )
+    return rows
+
+
+def get_effectiveness_daily_trends(
+    db_path: Path,
+    days: int = 90,
+    provider: str | None = None,
+) -> list[dict]:
+    """Daily effectiveness trend series for charting rates over time."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (cutoff.isoformat(), provider) if provider else (cutoff.isoformat(),)
+        session_rows = con.execute(
+            f"""SELECT provider, session_id, project_name, started_at,
+                      estimated_cost_usd, active_duration_seconds,
+                      tool_call_count, tool_error_count,
+                      file_edit_count, file_write_count
+            FROM sessions
+            WHERE started_at >= ? {provider_filter}
+            ORDER BY started_at""",
+            params,
+        ).fetchall()
+
+        buckets: defaultdict[str, dict] = defaultdict(_empty_effectiveness_bucket)
+        for row in session_rows:
+            day = row["started_at"][:10]
+            _add_session_to_effectiveness_bucket(buckets[day], row)
+
+        joined_provider_filter = "AND s.provider = ?" if provider else ""
+        edit_rows = con.execute(
+            f"""SELECT s.started_at, tc.file_path
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {joined_provider_filter}
+              AND tc.tool_name IN ('Edit', 'Write')""",
+            params,
+        ).fetchall()
+        for row in edit_rows:
+            _add_edit_call_to_effectiveness_bucket(buckets[row["started_at"][:10]], row)
+    finally:
+        con.close()
+
+    flagged_rows = get_investigation_queue(
+        db_path,
+        hours=days * 24,
+        provider=provider,
+        limit=100000,
+    )
+    for row in flagged_rows:
+        started_at = row.get("started_at")
+        if not started_at:
+            continue
+        bucket = buckets[started_at[:10]]
+        bucket["review_session_count"] += 1
+        bucket["review_score"] += row["score"]
+
+    return [
+        {"date": day, **_effectiveness_bucket_result(bucket)}
+        for day, bucket in sorted(buckets.items())
+    ]
+
+
+def _collect_effectiveness_periods(
+    db_path: Path,
+    days: int,
+    provider: str | None,
+) -> defaultdict[tuple[str, str], dict[str, dict]]:
+    now = datetime.now(timezone.utc)
+    current_cutoff = now - timedelta(days=days)
+    previous_cutoff = now - timedelta(days=days * 2)
+    buckets: defaultdict[tuple[str, str], dict[str, dict]] = defaultdict(
+        _empty_effectiveness_periods,
+    )
+
+    con = get_connection(db_path)
+    try:
+        provider_filter = "AND provider = ?" if provider else ""
+        params = (
+            (previous_cutoff.isoformat(), provider)
+            if provider else (previous_cutoff.isoformat(),)
+        )
+        session_rows = con.execute(
+            f"""SELECT provider, session_id, project_name, started_at,
+                      estimated_cost_usd, active_duration_seconds,
+                      tool_call_count, tool_error_count,
+                      file_edit_count, file_write_count
+            FROM sessions
+            WHERE started_at >= ? {provider_filter}""",
+            params,
+        ).fetchall()
+
+        for row in session_rows:
+            period = _effectiveness_period(
+                row["started_at"],
+                current_cutoff=current_cutoff,
+                previous_cutoff=previous_cutoff,
+            )
+            if period is None:
+                continue
+            _add_session_to_effectiveness_bucket(
+                buckets[(row["provider"], row["project_name"])][period],
+                row,
+            )
+            _add_session_to_effectiveness_bucket(
+                buckets[("__all__", "__all__")][period],
+                row,
+            )
+
+        joined_provider_filter = "AND s.provider = ?" if provider else ""
+        edit_rows = con.execute(
+            f"""SELECT s.provider, s.project_name, s.started_at, tc.file_path
+            FROM tool_calls tc
+            JOIN sessions s
+              ON s.provider = tc.provider
+             AND s.session_id = tc.session_id
+            WHERE s.started_at >= ? {joined_provider_filter}
+              AND tc.tool_name IN ('Edit', 'Write')""",
+            params,
+        ).fetchall()
+
+        for row in edit_rows:
+            period = _effectiveness_period(
+                row["started_at"],
+                current_cutoff=current_cutoff,
+                previous_cutoff=previous_cutoff,
+            )
+            if period is None:
+                continue
+            _add_edit_call_to_effectiveness_bucket(
+                buckets[(row["provider"], row["project_name"])][period],
+                row,
+            )
+            _add_edit_call_to_effectiveness_bucket(
+                buckets[("__all__", "__all__")][period],
+                row,
+            )
+    finally:
+        con.close()
+
+    flagged_rows = get_investigation_queue(
+        db_path,
+        hours=days * 48,
+        provider=provider,
+        limit=100000,
+    )
+    for row in flagged_rows:
+        period = _effectiveness_period(
+            row["started_at"],
+            current_cutoff=current_cutoff,
+            previous_cutoff=previous_cutoff,
+        )
+        if period is None:
+            continue
+        for key in ((row["provider"], row["project_name"]), ("__all__", "__all__")):
+            buckets[key][period]["review_session_count"] += 1
+            buckets[key][period]["review_score"] += row["score"]
+
+    return buckets
+
+
+def _empty_effectiveness_periods() -> dict[str, dict]:
+    return {
+        "current": _empty_effectiveness_bucket(),
+        "previous": _empty_effectiveness_bucket(),
+    }
+
+
+def _empty_effectiveness_bucket() -> dict:
+    return {
+        "session_count": 0,
+        "total_cost": 0.0,
+        "total_active_seconds": 0,
+        "tool_call_count": 0,
+        "tool_error_count": 0,
+        "no_edit_session_count": 0,
+        "edit_call_count": 0,
+        "attributed_edit_call_count": 0,
+        "review_session_count": 0,
+        "review_score": 0,
+    }
+
+
+def _add_session_to_effectiveness_bucket(bucket: dict, row: dict) -> None:
+    edits = (row["file_edit_count"] or 0) + (row["file_write_count"] or 0)
+    bucket["session_count"] += 1
+    bucket["total_cost"] += row["estimated_cost_usd"] or 0.0
+    bucket["total_active_seconds"] += row["active_duration_seconds"] or 0
+    bucket["tool_call_count"] += row["tool_call_count"] or 0
+    bucket["tool_error_count"] += row["tool_error_count"] or 0
+    if (row["tool_call_count"] or 0) > 0 and edits == 0:
+        bucket["no_edit_session_count"] += 1
+
+
+def _add_edit_call_to_effectiveness_bucket(bucket: dict, row: dict) -> None:
+    bucket["edit_call_count"] += 1
+    if row["file_path"] is not None:
+        bucket["attributed_edit_call_count"] += 1
+
+
+def _effectiveness_bucket_result(bucket: dict) -> dict:
+    sessions = bucket["session_count"]
+    total_cost = bucket["total_cost"]
+    edit_calls = bucket["edit_call_count"]
+    attributed_edits = bucket["attributed_edit_call_count"]
+    tools = bucket["tool_call_count"]
+    return {
+        "session_count": sessions,
+        "total_cost": round(total_cost, 4),
+        "avg_cost_per_session": total_cost / sessions if sessions > 0 else 0.0,
+        "avg_active_seconds": (
+            bucket["total_active_seconds"] / sessions if sessions > 0 else 0.0
+        ),
+        "tool_call_count": tools,
+        "tool_error_count": bucket["tool_error_count"],
+        "error_rate": bucket["tool_error_count"] / tools if tools > 0 else 0.0,
+        "no_edit_session_count": bucket["no_edit_session_count"],
+        "no_edit_rate": (
+            bucket["no_edit_session_count"] / sessions if sessions > 0 else 0.0
+        ),
+        "edit_call_count": edit_calls,
+        "attributed_edit_call_count": attributed_edits,
+        "edit_attribution_rate": (
+            attributed_edits / edit_calls if edit_calls > 0 else 0.0
+        ),
+        "cost_per_edit": total_cost / attributed_edits if attributed_edits > 0 else 0.0,
+        "review_session_count": bucket["review_session_count"],
+        "review_rate": (
+            bucket["review_session_count"] / sessions if sessions > 0 else 0.0
+        ),
+        "review_score": bucket["review_score"],
+    }
+
+
+def _effectiveness_period(
+    started_at: str,
+    current_cutoff: datetime,
+    previous_cutoff: datetime,
+) -> str | None:
+    value = _parse_iso_datetime(started_at)
+    if value >= current_cutoff:
+        return "current"
+    if value >= previous_cutoff:
+        return "previous"
+    return None
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _ratio_delta(current: float, previous: float) -> float | None:
+    if previous == 0:
+        return None
+    return (current - previous) / previous
 
 
 def _investigation_flags(
