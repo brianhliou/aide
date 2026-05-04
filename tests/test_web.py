@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from aide.artifacts import accept_artifact, get_artifact, propose_artifact, reject_artifact
+from aide.artifacts import (
+    accept_artifact,
+    get_artifact,
+    list_artifacts,
+    propose_artifact,
+    reject_artifact,
+)
 from aide.config import AideConfig
 from aide.db import ingest_sessions, init_db, log_ingestion, rebuild_daily_stats
 from aide.models import (
@@ -505,6 +511,7 @@ class TestRoutes:
     def test_effectiveness_action_links_to_filtered_sessions(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness")
         assert b"/sessions?signal=no-edits" in resp.data
+        assert b"Propose Artifact" in resp.data
 
     def test_effectiveness_provider_filter(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness?provider=codex")
@@ -520,6 +527,23 @@ class TestRoutes:
         assert b"no edits" in resp.data
         assert b"eff-beta-flagged" in resp.data
         assert b"eff-alpha-current" not in resp.data
+
+    def test_action_propose_post_creates_artifact(
+        self,
+        effectiveness_client,
+        effectiveness_db,
+    ):
+        resp = effectiveness_client.post(
+            "/actions/propose",
+            data={"signal": "no-edits", "hours": str(30 * 24)},
+        )
+
+        artifacts = list_artifacts(effectiveness_db, status="proposed")
+        assert resp.status_code == 302
+        assert resp.headers["Location"] == "/artifacts?status=proposed"
+        assert len(artifacts) == 1
+        assert artifacts[0]["artifact_type"] == "planner_signal"
+        assert artifacts[0]["project_name"] == "beta"
 
     def test_sessions_returns_200(self, client):
         resp = client.get("/sessions")

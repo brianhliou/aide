@@ -64,6 +64,7 @@ aide serve --port 9000   # Custom port
 aide stats               # Print summary to terminal
 aide autopsy <id>        # Diagnose a specific session
 aide digest <id> --save-proposals
+aide actions propose --signal no-edits
 aide artifacts list
 aide artifacts show <artifact-id>
 aide artifacts accept <artifact-id>

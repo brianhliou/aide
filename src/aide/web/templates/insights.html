@@ -211,7 +211,15 @@
                     <a href="{{ url_for('dashboard.sessions', signal=item.slug, provider=provider_filter) if provider_filter else url_for('dashboard.sessions', signal=item.slug) }}" class="text-sm font-medium text-blue-600 hover:text-blue-800 hover:underline">
                         {{ item.label }}
                     </a>
-                    <span class="text-xs text-gray-500">{{ item.count }}</span>
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs text-gray-500">{{ item.count }}</span>
+                        <form method="post" action="{{ url_for('dashboard.action_propose') }}">
+                            <input type="hidden" name="signal" value="{{ item.slug }}">
+                            <input type="hidden" name="hours" value="{{ investigation_actions.window_hours }}">
+                            {% if provider_filter %}<input type="hidden" name="provider" value="{{ provider_filter }}">{% endif %}
+                            <button type="submit" class="px-2 py-1 rounded border border-gray-300 text-xs font-medium text-gray-700 hover:bg-gray-50">Propose Artifact</button>
+                        </form>
+                    </div>
                 </div>
                 <p class="text-xs text-gray-600">{{ item.action }}</p>
             </div>

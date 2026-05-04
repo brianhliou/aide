@@ -1973,6 +1973,7 @@ def get_investigation_queue(
             rows.append({
                 "provider": session["provider"],
                 "session_id": session["session_id"],
+                "project_path": session["project_path"],
                 "project_name": session["project_name"],
                 "custom_title": session["custom_title"],
                 "started_at": session["started_at"],

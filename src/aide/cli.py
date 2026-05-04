@@ -609,6 +609,88 @@ def digest(session_id: str, provider: str | None, save_proposals: bool):
 
 
 @cli.group()
+def actions():
+    """Propose artifacts from repeated investigation actions."""
+    pass
+
+
+@actions.command("propose")
+@click.option("--signal", required=True, help="Investigation action slug, e.g. no-edits.")
+@click.option(
+    "--provider",
+    type=click.Choice(sorted(SUPPORTED_PROVIDERS)),
+    default=None,
+    help="Filter by provider.",
+)
+@click.option("--project", "project_name", default=None, help="Filter by project name.")
+@click.option("--hours", default=30 * 24, type=int, help="Lookback window in hours.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Preview proposals without saving them.",
+)
+def actions_propose(
+    signal: str,
+    provider: str | None,
+    project_name: str | None,
+    hours: int,
+    dry_run: bool,
+):
+    """Create proposed artifacts from an investigation action signal."""
+    config = load_config()
+    db_path = config.db_path
+
+    if not db_path.exists():
+        click.echo("No data yet. Run 'aide ingest' first.", err=True)
+        raise SystemExit(1)
+
+    from aide.actions import build_action_proposals, save_action_proposals
+
+    result = build_action_proposals(
+        db_path,
+        signal,
+        provider=provider,
+        project_name=project_name,
+        hours=hours,
+    )
+    click.echo(f"Action proposals for {result.signal_label} ({hours}h)")
+    if result.skipped_existing:
+        click.echo(f"Skipped {result.skipped_existing} existing proposal(s).")
+
+    if not result.proposals:
+        click.echo("No new artifact proposals found.")
+        return
+
+    artifact_ids = (
+        [None] * len(result.proposals)
+        if dry_run else save_action_proposals(db_path, result)
+    )
+    if dry_run:
+        click.echo(
+            f"Dry run: {len(result.proposals)} artifact proposal(s). "
+            "Run without --dry-run to persist them."
+        )
+    else:
+        click.echo(f"Saved {len(result.proposals)} artifact proposal(s).")
+
+    for index, (proposal, artifact_id) in enumerate(
+        zip(result.proposals, artifact_ids, strict=True),
+        start=1,
+    ):
+        artifact = proposal.artifact
+        saved_suffix = f" #{artifact_id}" if artifact_id is not None else ""
+        click.echo("")
+        click.echo(f"{index}. [{artifact.artifact_type}]{saved_suffix} {artifact.title}")
+        click.echo(f"   Project: {artifact.project_name}")
+        click.echo(f"   Confidence: {artifact.confidence}")
+        click.echo(f"   {artifact.body}")
+        if proposal.reason:
+            click.echo(f"   Reason: {proposal.reason}")
+        for evidence in proposal.evidence:
+            click.echo(f"   Evidence: {evidence.summary}")
+
+
+@cli.group()
 def artifacts():
     """Review proposed semantic artifacts."""
     pass
