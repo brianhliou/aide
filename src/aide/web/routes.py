@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, redirect, render_template, request
 
 from aide.artifacts import accept_artifact, reject_artifact
 from aide.config import save_config_value
+from aide.runbook import render_project_runbook
 from aide.web import queries
 
 bp = Blueprint("dashboard", __name__)
@@ -214,6 +215,29 @@ def artifact_reject(artifact_id: int):
     except ValueError as exc:
         return render_template("404.html", message=str(exc)), 400
     return redirect(_artifact_redirect_url())
+
+
+@bp.route("/runbook")
+def runbook():
+    """Generated runbook preview for accepted artifacts."""
+    db_path = current_app.config["DB_PATH"]
+    sub = current_app.config["SUBSCRIPTION_USER"]
+    projects = queries.get_accepted_artifact_projects(db_path)
+    project_names = {item["project_name"] for item in projects}
+    project = request.args.get("project") or None
+    if project is None and projects:
+        project = projects[0]["project_name"]
+    markdown = ""
+    if project:
+        markdown = render_project_runbook(db_path, project)
+    return render_template(
+        "runbook.html",
+        projects=projects,
+        project_names=project_names,
+        project=project,
+        markdown=markdown,
+        subscription_user=sub,
+    )
 
 
 @bp.route("/settings/subscription", methods=["POST"])

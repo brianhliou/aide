@@ -2463,6 +2463,22 @@ def get_artifact_filter_options(db_path: Path) -> dict:
         con.close()
 
 
+def get_accepted_artifact_projects(db_path: Path) -> list[dict]:
+    """Return projects that have accepted artifacts."""
+    con = get_connection(db_path)
+    try:
+        rows = con.execute(
+            """SELECT project_name, COUNT(*) AS artifact_count
+            FROM semantic_artifacts
+            WHERE status = 'accepted'
+            GROUP BY project_name
+            ORDER BY project_name"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
 def _split_evidence(value: str | None) -> list[str]:
     if not value:
         return []

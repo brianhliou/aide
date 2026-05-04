@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}aide - Runbook{% endblock %}
+
+{% block content %}
+<div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between mb-6">
+    <div>
+        <h1 class="text-2xl font-bold">Runbook</h1>
+        <p class="text-sm text-gray-600 mt-2">Generated from accepted semantic artifacts.</p>
+    </div>
+    {% if projects or project %}
+    <form method="get" action="{{ url_for('dashboard.runbook') }}" class="flex flex-col sm:flex-row gap-2 sm:items-end">
+        <label class="block">
+            <span class="text-xs font-medium uppercase text-gray-500">Project</span>
+            <select name="project" class="mt-1 block w-64 max-w-full rounded border-gray-300 text-sm">
+                {% for item in projects %}
+                <option value="{{ item.project_name }}" {% if project == item.project_name %}selected{% endif %}>
+                    {{ item.project_name }} ({{ item.artifact_count }})
+                </option>
+                {% endfor %}
+                {% if project and project not in project_names %}
+                <option value="{{ project }}" selected>{{ project }} (0)</option>
+                {% endif %}
+            </select>
+        </label>
+        <button type="submit" class="px-3 py-2 rounded bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">Preview</button>
+    </form>
+    {% endif %}
+</div>
+
+{% if markdown %}
+<div class="bg-white rounded-lg shadow">
+    <div class="border-b border-gray-100 px-5 py-3 flex items-center justify-between gap-4">
+        <div>
+            <h2 class="text-sm font-semibold text-gray-900">{{ project }}</h2>
+            <p class="text-xs text-gray-500">Markdown preview</p>
+        </div>
+        <a href="{{ url_for('dashboard.artifacts', project=project, status='accepted') }}"
+           class="px-3 py-1.5 rounded border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50">
+            Accepted Artifacts
+        </a>
+    </div>
+    <pre class="whitespace-pre-wrap break-words p-5 text-sm leading-6 text-gray-800 font-mono overflow-x-auto">{{ markdown }}</pre>
+</div>
+{% else %}
+<div class="bg-white rounded-lg shadow p-10 text-center text-sm text-gray-500">
+    No accepted artifacts found.
+</div>
+{% endif %}
+{% endblock %}

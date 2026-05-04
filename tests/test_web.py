@@ -548,6 +548,29 @@ class TestRoutes:
         assert resp.status_code == 400
         assert b"only proposed artifacts" in resp.data
 
+    def test_runbook_returns_200(self, artifact_client):
+        resp = artifact_client.get("/runbook")
+        assert resp.status_code == 200
+
+    def test_runbook_defaults_to_first_project_with_accepted_artifacts(
+        self,
+        artifact_client,
+    ):
+        resp = artifact_client.get("/runbook")
+
+        assert b"# alpha Runbook" in resp.data
+        assert b"Use SQLite" in resp.data
+        assert b"Run full check" not in resp.data
+        assert b"Avoid raw log sharing" not in resp.data
+
+    def test_runbook_renders_requested_project(self, artifact_client):
+        resp = artifact_client.get("/runbook?project=beta")
+
+        assert resp.status_code == 200
+        assert b"# beta Runbook" in resp.data
+        assert b"No accepted artifacts found for this project." in resp.data
+        assert b"Use SQLite" not in resp.data
+
 
 # ===========================================================================
 # Navigation
@@ -557,7 +580,10 @@ class TestRoutes:
 class TestNavigation:
     """Test that navigation links are present on all pages."""
 
-    @pytest.mark.parametrize("path", ["/", "/projects", "/sessions", "/tools", "/artifacts"])
+    @pytest.mark.parametrize(
+        "path",
+        ["/", "/projects", "/sessions", "/tools", "/artifacts", "/runbook"],
+    )
     def test_nav_links_present(self, client, path):
         resp = client.get(path)
         assert b'href="/"' in resp.data
@@ -565,6 +591,7 @@ class TestNavigation:
         assert b'href="/sessions"' in resp.data
         assert b'href="/tools"' in resp.data
         assert b'href="/artifacts"' in resp.data
+        assert b'href="/runbook"' in resp.data
 
 
 # ===========================================================================
@@ -629,6 +656,11 @@ class TestEmptyDatabase:
         resp = empty_client.get("/artifacts")
         assert resp.status_code == 200
         assert b"No artifacts found" in resp.data
+
+    def test_runbook_empty(self, empty_client):
+        resp = empty_client.get("/runbook")
+        assert resp.status_code == 200
+        assert b"No accepted artifacts found." in resp.data
 
 
 class TestSubscriptionUser:
