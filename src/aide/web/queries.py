@@ -1953,6 +1953,107 @@ def get_investigation_queue(
         con.close()
 
 
+def get_investigation_action_summary(
+    db_path: Path,
+    hours: int = 36,
+    provider: str | None = None,
+) -> dict:
+    """Aggregate investigation queue signals into repeat causes and actions."""
+    rows = get_investigation_queue(
+        db_path,
+        hours=hours,
+        provider=provider,
+        limit=100000,
+    )
+    flag_counts: dict[str, int] = {}
+    flag_tones: dict[str, str] = {}
+    cause_counts: dict[str, int] = {}
+    project_counts: dict[tuple[str, str], dict] = {}
+    total_score = 0
+
+    for row in rows:
+        total_score += row["score"]
+        project_key = (row["provider"], row["project_name"])
+        if project_key not in project_counts:
+            project_counts[project_key] = {
+                "provider": row["provider"],
+                "project_name": row["project_name"],
+                "count": 0,
+                "score": 0,
+            }
+        project_counts[project_key]["count"] += 1
+        project_counts[project_key]["score"] += row["score"]
+
+        for flag in row["flags"]:
+            label = _normalize_investigation_flag_label(flag["label"])
+            flag_counts[label] = flag_counts.get(label, 0) + 1
+            flag_tones[label] = _stronger_tone(
+                flag_tones.get(label),
+                flag.get("tone", "gray"),
+            )
+
+        for cause in row["causes"]:
+            label = cause["label"]
+            cause_counts[label] = cause_counts.get(label, 0) + cause["count"]
+
+    flagged_count = len(rows)
+    flag_breakdown = [
+        {
+            "label": label,
+            "count": count,
+            "pct": count / flagged_count if flagged_count else 0.0,
+            "tone": flag_tones.get(label, "gray"),
+            "action": _investigation_action_for_label(label),
+        }
+        for label, count in flag_counts.items()
+    ]
+    flag_breakdown.sort(key=lambda item: item["count"], reverse=True)
+
+    cause_breakdown = [
+        {
+            "label": label,
+            "count": count,
+            "action": _investigation_action_for_label(label),
+        }
+        for label, count in cause_counts.items()
+    ]
+    cause_breakdown.sort(key=lambda item: item["count"], reverse=True)
+
+    project_breakdown = list(project_counts.values())
+    project_breakdown.sort(key=lambda item: (item["score"], item["count"]), reverse=True)
+
+    actions = [
+        {
+            "label": item["label"],
+            "count": item["count"],
+            "action": item["action"],
+            "source": "flag",
+        }
+        for item in flag_breakdown[:6]
+    ]
+    actions.extend(
+        {
+            "label": item["label"],
+            "count": item["count"],
+            "action": item["action"],
+            "source": "cause",
+        }
+        for item in cause_breakdown[:6]
+        if item["label"] not in {action["label"] for action in actions}
+    )
+    actions.sort(key=lambda item: item["count"], reverse=True)
+
+    return {
+        "window_hours": hours,
+        "flagged_session_count": flagged_count,
+        "total_score": total_score,
+        "flag_breakdown": flag_breakdown,
+        "cause_breakdown": cause_breakdown,
+        "project_breakdown": project_breakdown[:8],
+        "actions": actions[:6],
+    }
+
+
 def get_effectiveness_overview(
     db_path: Path,
     days: int = 30,
@@ -2383,6 +2484,115 @@ def _investigation_flags(
         flags.append({"label": "weak attribution", "tone": "gray"})
 
     return flags, score
+
+
+def _normalize_investigation_flag_label(label: str) -> str:
+    if label.endswith(" permission friction"):
+        return "permission friction"
+    if label.endswith(" permission errors"):
+        return "permission errors"
+    if label.endswith(" file access errors"):
+        return "file access errors"
+    if label.endswith(" edit mismatches"):
+        return "edit mismatches"
+    if label.endswith(" edits missing paths"):
+        return "edits missing paths"
+    if label.endswith(" Other errors"):
+        return "Other errors"
+    if label.endswith(" total errors"):
+        return "high total errors"
+    return label
+
+
+def _stronger_tone(current: str | None, new: str) -> str:
+    order = {"gray": 0, "amber": 1, "red": 2}
+    if current is None:
+        return new
+    return new if order.get(new, 0) > order.get(current, 0) else current
+
+
+def _investigation_action_for_label(label: str) -> str:
+    actions = {
+        "permission friction": (
+            "Review repeated approval prompts and add narrow reusable prefix rules "
+            "only for deterministic verification commands."
+        ),
+        "missing prefix rules": (
+            "Add prefix_rule guidance for repeated test, lint, or check commands; "
+            "keep broad mutation and external-service commands on request."
+        ),
+        "permission errors": (
+            "Check whether the session started in the intended repo root and whether "
+            "sandbox boundaries match the task."
+        ),
+        "file access errors": (
+            "Improve project attribution and path instructions so agents search from "
+            "the repo root before escalating."
+        ),
+        "edit mismatches": (
+            "Prefer smaller patches or reread target files immediately before edits."
+        ),
+        "edits missing paths": (
+            "Improve shell edit attribution by preferring structured edit tools or "
+            "repo-relative paths in mutation commands."
+        ),
+        "Other errors": (
+            "Inspect a sample of uncategorized failures and add a narrow parser category "
+            "when a repeat pattern is real."
+        ),
+        "high total errors": (
+            "Separate expected verification failures from setup or environment failures "
+            "before treating the session as productive iteration."
+        ),
+        "no edits": (
+            "Classify research-only sessions explicitly or tighten task prompts toward "
+            "a concrete code or documentation change."
+        ),
+        "expensive no-edit": (
+            "Review whether the task should have been split into a research brief before "
+            "implementation work."
+        ),
+        "zero active time": (
+            "Check provider timing data before using duration metrics for this session."
+        ),
+        "low active time": (
+            "Verify active-time detection for sessions with many tool calls in short work blocks."
+        ),
+        "high cost/edit": (
+            "Look for broad exploration before edits; turn repeat findings into project briefs "
+            "or durable artifacts."
+        ),
+        "weak attribution": (
+            "Start agents from the repo root and add project-specific instructions where logs "
+            "fall back to generic directories."
+        ),
+        "verification command": (
+            "Persist narrow approvals for repeated deterministic verification commands."
+        ),
+        "broad search": (
+            "Scope search commands to repo-relative paths before requesting broader access."
+        ),
+        "mutation command": (
+            "Keep broad mutation commands on-request unless they are wrapped by a project task."
+        ),
+        "browser/system access": (
+            "Use targeted browser or process checks and avoid broad system-control approvals."
+        ),
+        "external service": (
+            "Keep network and hosted-service commands explicit unless a workflow is proven safe."
+        ),
+        "cache/home access": (
+            "Prefer repo-local caches and avoid exposing home-directory paths unless needed."
+        ),
+        "other permission friction": (
+            "Inspect representative sessions and decide whether a new permission "
+            "category is needed."
+        ),
+    }
+    return actions.get(
+        label,
+        "Review representative sessions and decide whether to update project instructions.",
+    )
 
 
 def _weak_project_attribution(session: dict) -> bool:

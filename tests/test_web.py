@@ -277,7 +277,7 @@ def effectiveness_db(tmp_path):
         project_name="beta",
         provider="codex",
         cost=4.0,
-        days_ago=2,
+        days_ago=1,
     )
     previous = _make_test_session(
         session_id="eff-alpha-previous",
@@ -495,6 +495,7 @@ class TestRoutes:
     def test_effectiveness_contains_project_signals(self, effectiveness_client):
         resp = effectiveness_client.get("/effectiveness")
         assert b"Effectiveness Trend" in resp.data
+        assert b"Action Summary" in resp.data
         assert b"Review Rate" in resp.data
         assert b"Edit Attribution" in resp.data
         assert b"Review Queue" in resp.data
@@ -1430,6 +1431,39 @@ class TestQueryEffectivenessOverviewPage:
         assert queries.get_effectiveness_daily_trends(empty_db) == []
 
 
+class TestQueryInvestigationActionSummary:
+    """Tests for grouped investigation actions."""
+
+    def test_empty_db_returns_empty_summary(self, empty_db):
+        result = queries.get_investigation_action_summary(empty_db)
+
+        assert result["flagged_session_count"] == 0
+        assert result["flag_breakdown"] == []
+        assert result["cause_breakdown"] == []
+        assert result["project_breakdown"] == []
+        assert result["actions"] == []
+
+    def test_groups_flags_into_actions(self, effectiveness_db):
+        result = queries.get_investigation_action_summary(
+            effectiveness_db,
+            hours=30 * 24,
+        )
+
+        assert result["flagged_session_count"] == 1
+        labels = {item["label"] for item in result["actions"]}
+        assert "no edits" in labels
+        assert result["project_breakdown"][0]["project_name"] == "beta"
+
+    def test_provider_filter(self, effectiveness_db):
+        result = queries.get_investigation_action_summary(
+            effectiveness_db,
+            hours=30 * 24,
+            provider="claude",
+        )
+
+        assert result["flagged_session_count"] == 0
+
+
 class TestQueryToolCounts:
     """Tests for get_tool_counts."""
 
@@ -1986,6 +2020,12 @@ class TestInsightsRoute:
         assert b"Codex" in resp.data
         assert b"beta" in resp.data
         assert b"alpha" not in resp.data
+
+    def test_insights_shows_investigation_actions(self, effectiveness_client):
+        resp = effectiveness_client.get("/insights")
+        assert resp.status_code == 200
+        assert b"Investigation Actions" in resp.data
+        assert b"no edits" in resp.data
 
     def test_insights_empty_db_returns_200(self, empty_client):
         resp = empty_client.get("/insights")

@@ -77,6 +77,11 @@ def effectiveness():
         overview=queries.get_effectiveness_overview(db_path, provider=provider),
         projects=queries.get_effectiveness_project_rollups(db_path, provider=provider),
         trends=queries.get_effectiveness_daily_trends(db_path, provider=provider),
+        investigation_actions=queries.get_investigation_action_summary(
+            db_path,
+            hours=30 * 24,
+            provider=provider,
+        ),
         investigation_queue=queries.get_investigation_queue(
             db_path,
             hours=30 * 24,
@@ -174,6 +179,10 @@ def insights():
         response_times=queries.get_user_response_times(db_path, provider=provider),
         thinking_stats=queries.get_thinking_stats(db_path, provider=provider),
         permission_modes=queries.get_permission_mode_breakdown(
+            db_path,
+            provider=provider,
+        ),
+        investigation_actions=queries.get_investigation_action_summary(
             db_path,
             provider=provider,
         ),
